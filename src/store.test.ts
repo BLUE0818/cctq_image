@@ -160,7 +160,7 @@ describe('reused task API profile', () => {
     id: 'custom-profile',
     name: '自定义配置',
     provider: customProvider.id,
-    baseUrl: 'https://code.b886.top/v1',
+    baseUrl: 'https://www.cctq.ai/v1',
     apiKey: 'custom-key',
     model: 'custom-model',
     timeout: 600,

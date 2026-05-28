@@ -1103,7 +1103,7 @@ async function executeTask(taskId: string) {
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
     )
     const hasRevisedPromptValue = shouldStoreRevisedPrompts && result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
-    if (taskProvider === 'openai' && !activeProfile.codexCli) {
+    if (taskProvider === 'openai' && !activeProfile.codexCli && !result.streamed) {
       if (promptWasRevised) {
         showCodexCliPrompt()
       } else if (!hasRevisedPromptValue) {

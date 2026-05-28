@@ -201,6 +201,8 @@ export interface ImageGenerationRequest {
   moderation: string
   output_compression?: number
   n?: number
+  stream?: boolean
+  partial_images?: number
 }
 
 // ===== API 响应 =====

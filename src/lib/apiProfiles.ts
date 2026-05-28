@@ -13,7 +13,7 @@ import type {
 } from '../types'
 import { readRuntimeEnv } from './runtimeEnv'
 
-const DEFAULT_BASE_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL) || 'https://code.b886.top/v1'
+const DEFAULT_BASE_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL) || 'https://www.cctq.ai/v1'
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
@@ -33,6 +33,8 @@ const DEFAULT_GENERATE_BODY = {
   moderation: '$params.moderation',
   output_compression: '$params.output_compression',
   n: '$params.n',
+  stream: true,
+  partial_images: 3,
 }
 const DEFAULT_EDIT_BODY = DEFAULT_GENERATE_BODY
 const DEFAULT_OPENAI_RESULT: CustomProviderResultMapping = {

@@ -29,6 +29,8 @@ export interface CallApiResult {
   actualParamsList?: Array<Partial<TaskParams> | undefined>
   /** 每张图片对应的 API 改写提示词 */
   revisedPrompts?: Array<string | undefined>
+  /** API 是否使用流式响应 */
+  streamed?: boolean
 }
 
 export function isHttpUrl(value: unknown): value is string {
