@@ -5,6 +5,7 @@ import {
   DEFAULT_IMAGES_MODEL,
   findEquivalentApiProfile,
   mergeImportedSettings,
+  normalizeImageModel,
   normalizeSettings,
 } from './apiProfiles'
 
@@ -98,7 +99,7 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
     })
     if (apiUrlParam !== null) profile.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
     if (apiKeyParam !== null) profile.apiKey = apiKeyParam.trim()
-    if (modelParam !== null && modelParam.trim()) profile.model = modelParam.trim()
+    if (modelParam !== null) profile.model = normalizeImageModel(modelParam)
     if (codexCliParam !== null) profile.codexCli = codexCliParam.trim().toLowerCase() === 'true'
 
     const existingProfile = settings.profiles.find((item) => getProfileDedupKey(item) === getProfileDedupKey(profile))

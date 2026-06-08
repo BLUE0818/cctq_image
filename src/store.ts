@@ -539,6 +539,9 @@ export const useStore = create<AppState>()(
       name: 'cctq-image',
       partialize: getPersistedState,
       merge: mergePersistedState,
+      onRehydrateStorage: () => (state) => {
+        if (state) state.setSettings(state.settings)
+      },
     },
   ),
 )

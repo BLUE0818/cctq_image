@@ -141,12 +141,32 @@ describe('mergeImportedSettings', () => {
       name: 'Imported Custom',
       provider: 'custom-json',
       apiKey: 'custom-key',
-      model: 'custom-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 })
 
 describe('custom providers', () => {
+  it('overwrites unsupported custom model values during normalization', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        id: 'legacy-custom-model',
+        name: 'Legacy Custom Model',
+        provider: 'openai',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'key',
+        model: 'custom-model',
+        timeout: 600,
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy-custom-model',
+    })
+
+    expect(settings.profiles[0].model).toBe(DEFAULT_IMAGES_MODEL)
+    expect(settings.model).toBe(DEFAULT_IMAGES_MODEL)
+  })
+
   it('normalizes custom provider definitions and keeps custom profiles', () => {
     const settings = normalizeSettings({
       customProviders: [{
@@ -266,7 +286,7 @@ describe('custom providers', () => {
       provider: 'custom-json',
       baseUrl: 'https://custom.example.com/v1',
       apiKey: '',
-      model: 'custom-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 

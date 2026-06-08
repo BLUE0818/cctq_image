@@ -8,6 +8,7 @@ import {
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
+  IMAGE_MODEL_OPTIONS,
   findEquivalentApiProfile,
   getApiProviderLabel,
   getActiveApiProfile,
@@ -15,6 +16,7 @@ import {
   isOpenAICompatibleProvider,
   mergeImportedSettings,
   normalizeCustomProviderDefinition,
+  normalizeImageModel,
   normalizeSettings,
   switchApiProfileProvider,
 } from '../lib/apiProfiles'
@@ -32,6 +34,7 @@ function newId(prefix: string) {
 }
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
+const modelSelectOptions = IMAGE_MODEL_OPTIONS.map((model) => ({ label: model, value: model }))
 
 interface CustomProviderForm {
   json: string
@@ -136,7 +139,7 @@ const CUSTOM_PROVIDER_LLM_PROMPT = `# 角色
 2. 如果当前环境支持读取链接，主动读取；否则要求用户粘贴文档内容。
 3. 在未获得文档前不要猜测，不要生成占位配置。
 4. 从文档中判断提交接口、图生图接口、异步任务查询接口、状态值、结果图片路径。
-5. 如果文档中明确了默认模型 ID 或 API Base URL，在 profiles 中填入；如果未明确模型 ID，model 使用 "gpt-image-2"；如果未明确 API Base URL，baseUrl 留空，由用户稍后填写。
+5. 如果文档中明确了 API Base URL，在 profiles 中填入；model 只能使用 "gpt-image-2" 或 "gpt-image-2-pro"，其他模型统一写 "gpt-image-2-pro"；如果未明确 API Base URL，baseUrl 留空，由用户稍后填写。
 6. 输出最终 JSON；不要索要 API Key。
 
 # 输出结构
@@ -177,7 +180,7 @@ result 字段：
 - b64JsonPaths：base64 图片路径数组，支持 * 通配数组。例如 data.*.b64_json。
 
 body 模板变量：
-- $profile.model：用户在设置里填写的模型 ID。
+- $profile.model：用户在设置里选择的模型 ID，仅支持 gpt-image-2 或 gpt-image-2-pro。
 - $prompt：当前提示词。
 - $params.size、$params.quality、$params.output_format、$params.output_compression、$params.moderation、$params.n：应用内参数。
 - $inputImages.dataUrls：参考图 data URL 数组；没有参考图时会自动省略该字段。
@@ -192,7 +195,7 @@ multipart files 示例：
 - name：配置名称，方便用户识别。
 - provider：对应 customProviders 中某个元素的 id。
 - baseUrl：API Base URL。如果文档明确给出，填入完整基础地址；否则留空字符串 ""。
-- model：模型 ID。如果 API 文档明确了默认模型，填入该值；否则使用 "gpt-image-2"。
+- model：模型 ID，仅支持 "gpt-image-2" 或 "gpt-image-2-pro"；如果文档给出其他模型，仍使用 "gpt-image-2-pro"。
 
 profiles 中不要包含 apiKey（用户导入后自行填写）。
 
@@ -205,7 +208,7 @@ profiles 中不要包含 apiKey（用户导入后自行填写）。
 - 如果结果 URL 是数组，路径必须写到数组元素，例如 data.result.images.*.url.*。
 
 ## 同步接口示例
-{"customProviders":[{"id":"custom-example-sync","name":"示例同步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"files":[{"field":"image[]","source":"inputImages","array":true},{"field":"mask","source":"mask"}],"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}}}],"profiles":[{"name":"示例同步服务商","provider":"custom-example-sync","baseUrl":"https://api.example.com/v1","model":"example-model-v1",}]}
+{"customProviders":[{"id":"custom-example-sync","name":"示例同步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"files":[{"field":"image[]","source":"inputImages","array":true},{"field":"mask","source":"mask"}],"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}}}],"profiles":[{"name":"示例同步服务商","provider":"custom-example-sync","baseUrl":"https://api.example.com/v1","model":"gpt-image-2-pro",}]}
 
 ## 异步接口示例
 {"customProviders":[{"id":"custom-example-async","name":"示例异步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n"},"taskIdPath":"data"},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n"},"files":[{"field":"image[]","source":"inputImages","array":true}],"taskIdPath":"data"},"poll":{"path":"images/tasks/{task_id}","method":"GET","intervalSeconds":5,"statusPath":"data.status","successValues":["SUCCESS"],"failureValues":["FAILURE"],"errorPath":"data.fail_reason","result":{"imageUrlPaths":["data.data.data.*.url"],"b64JsonPaths":["data.data.data.*.b64_json"]}}}],"profiles":[{"name":"示例异步服务商","provider":"custom-example-async","baseUrl":"","model":"gpt-image-2",}]}
@@ -255,6 +258,7 @@ export default function SettingsModal() {
   const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && activeProfile.apiProxy
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
+  const activeModel = normalizeImageModel(activeProfile.model)
   const providerOptions = [
     { label: '创建自定义服务商', value: ADD_CUSTOM_PROVIDER_VALUE, variant: 'action' as const },
     { label: 'OpenAI 兼容接口', value: 'openai' },
@@ -344,12 +348,11 @@ export default function SettingsModal() {
   const commitSettings = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
       const normalizedBaseUrl = normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
-      const defaultModel = DEFAULT_IMAGES_MODEL
       return {
         ...profile,
         name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
         baseUrl: normalizedBaseUrl,
-        model: profile.model.trim() || defaultModel,
+        model: normalizeImageModel(profile.model),
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
         apiProxy: profile.provider === 'openai' && apiProxyAvailable ? profile.apiProxy : false,
         codexCli: profile.provider === 'openai' ? profile.codexCli : false,
@@ -375,7 +378,7 @@ export default function SettingsModal() {
     if (profile.provider === 'openai') {
       url.searchParams.set('apiUrl', normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl))
       if (includeApiKey && profile.apiKey.trim()) url.searchParams.set('apiKey', profile.apiKey.trim())
-      url.searchParams.set('model', profile.model.trim() || DEFAULT_IMAGES_MODEL)
+      url.searchParams.set('model', normalizeImageModel(profile.model))
       if (profile.codexCli) url.searchParams.set('codexCli', 'true')
       return url.toString()
     }
@@ -917,12 +920,14 @@ export default function SettingsModal() {
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
                   模型 ID
                 </span>
-                <input
-                  value={activeProfile.model}
-                  onChange={(e) => updateActiveProfile({ model: e.target.value })}
-                  onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                  type="text"
-                  placeholder={DEFAULT_IMAGES_MODEL}
+                <Select
+                  value={activeModel}
+                  onChange={(value) => {
+                    const model = String(value)
+                    updateActiveProfile({ model })
+                    commitActiveProfilePatch({ model })
+                  }}
+                  options={modelSelectOptions}
                   className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">

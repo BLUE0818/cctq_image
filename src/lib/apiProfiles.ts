@@ -14,7 +14,8 @@ import type {
 import { readRuntimeEnv } from './runtimeEnv'
 
 const DEFAULT_BASE_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL) || 'https://www.cctq.ai/v1'
-export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
+export const IMAGE_MODEL_OPTIONS = ['gpt-image-2', 'gpt-image-2-pro'] as const
+export const DEFAULT_IMAGES_MODEL = 'gpt-image-2-pro'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
@@ -74,6 +75,12 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function normalizeImageModel(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_IMAGES_MODEL
+  const model = value.trim()
+  return IMAGE_MODEL_OPTIONS.some((option) => option === model) ? model : DEFAULT_IMAGES_MODEL
 }
 
 function normalizeRequestMethod(value: unknown, fallback: CustomProviderRequestMethod = 'POST'): CustomProviderRequestMethod {
@@ -272,7 +279,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       ...profile,
       provider: customProvider.id,
       baseUrl: profile.baseUrl || DEFAULT_BASE_URL,
-      model: profile.model || DEFAULT_IMAGES_MODEL,
+      model: normalizeImageModel(profile.model),
       codexCli: false,
       apiProxy: false,
     }
@@ -299,7 +306,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     provider,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
+    model: normalizeImageModel(record.model ?? defaults.model),
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     codexCli: Boolean(record.codexCli),
     apiProxy: Boolean(record.apiProxy),
@@ -322,7 +329,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const legacyProfile = createDefaultOpenAIProfile({
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : DEFAULT_IMAGES_MODEL,
+    model: normalizeImageModel(record.model),
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : DEFAULT_API_TIMEOUT,
     codexCli: Boolean(record.codexCli),
     apiProxy: Boolean(record.apiProxy),
@@ -435,7 +442,7 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
     ...profile,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : profile.baseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : profile.apiKey,
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : profile.model,
+    model: normalizeImageModel(record.model ?? profile.model),
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
     codexCli: typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,

@@ -26,7 +26,7 @@ describe('URL settings params', () => {
     })
   })
 
-  it('uses model from URL params for OpenAI profiles', () => {
+  it('overwrites unsupported model values from URL params', () => {
     const current = normalizeSettings(DEFAULT_SETTINGS)
     const next = normalizeSettings({
       ...current,
@@ -37,7 +37,7 @@ describe('URL settings params', () => {
       provider: 'openai',
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'test-key',
-      model: 'custom-image-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 
@@ -131,7 +131,7 @@ describe('URL settings params', () => {
       id: 'custom-profile',
       provider: 'custom-json',
       apiKey: 'custom-key',
-      model: 'custom-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 
@@ -185,7 +185,7 @@ describe('URL settings params', () => {
       provider: 'custom-json',
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'custom-key',
-      model: 'custom-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 
@@ -232,7 +232,7 @@ describe('URL settings params', () => {
       provider: 'wrapped-custom',
       baseUrl: 'https://wrapped.example.com/v1',
       apiKey: 'wrapped-key',
-      model: 'wrapped-model',
+      model: DEFAULT_IMAGES_MODEL,
     })
   })
 })
