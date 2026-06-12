@@ -6,7 +6,8 @@ import { formatImageRatio } from '../lib/size'
 import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyBlobToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
-import { CloseIcon, CopyIcon, EditIcon, TrashIcon } from './icons'
+import { downloadImageIds } from '../lib/downloadImages'
+import { CloseIcon, CopyIcon, DownloadIcon, EditIcon, TrashIcon } from './icons'
 
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
@@ -265,6 +266,41 @@ export default function DetailModal() {
     }
   }
 
+  const handleDownloadCurrentOutput = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!currentOutputImageId || !task) return
+
+    try {
+      const result = await downloadImageIds([currentOutputImageId], `task-${task.id}`)
+      if (result.successCount === 0) {
+        showToast('下载失败', 'error')
+      } else {
+        showToast('下载成功', 'success')
+      }
+    } catch (err) {
+      console.error(err)
+      showToast('下载失败', 'error')
+    }
+  }
+
+  const handleDownloadAllOutputs = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!task?.outputImages?.length) return
+
+    try {
+      const result = await downloadImageIds(task.outputImages, `task-${task.id}`)
+      if (result.successCount === 0) {
+        showToast('下载失败', 'error')
+      } else if (result.failCount > 0) {
+        showToast(`部分下载失败：成功 ${result.successCount}，失败 ${result.failCount}`, 'error')
+      } else {
+        showToast(result.successCount > 1 ? `下载成功：${result.successCount} 张图片` : '下载成功', 'success')
+      }
+    } catch (err) {
+      console.error(err)
+      showToast('下载失败', 'error')
+    }
+  }
   const handleRetry = () => {
     retryTask(task)
     setDetailTaskId(null)
@@ -345,6 +381,28 @@ export default function DetailModal() {
                       {formatDuration()}
                     </span>
                   )
+                )}
+              </div>
+              <div className="absolute right-3 top-3 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleDownloadCurrentOutput}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-sm transition hover:bg-black/60"
+                  aria-label="下载当前图片"
+                  title="下载当前图片"
+                >
+                  <DownloadIcon className="h-4 w-4" />
+                </button>
+                {outputLen > 1 && (
+                  <button
+                    type="button"
+                    onClick={handleDownloadAllOutputs}
+                    className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-black/40 px-2 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-black/60"
+                    aria-label="下载全部图片"
+                    title="下载全部图片"
+                  >
+                    全部
+                  </button>
                 )}
               </div>
               {outputLen > 1 && (

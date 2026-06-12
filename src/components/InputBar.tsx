@@ -9,6 +9,7 @@ import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { getSafeBoundingClientRect } from '../lib/domRect'
+import { downloadImageIds, formatExportFileTime } from '../lib/downloadImages'
 import Select from './Select'
 import SizePickerModal from './SizePickerModal'
 import ViewportTooltip from './ViewportTooltip'
@@ -168,47 +169,21 @@ export default function InputBar() {
       showToast('选中的记录没有图片', 'info')
       return
     }
-    
-    let successCount = 0
-    let failCount = 0
-    
-    for (const id of imageIds) {
-      try {
-        let url = getCachedImage(id)
-        if (!url) {
-          url = await ensureImageCached(id)
-        }
-        if (!url) {
-          failCount++
-          continue
-        }
-        
-        const res = await fetch(url)
-        const blob = await res.blob()
-        const objUrl = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = objUrl
-        const ext = blob.type.split('/')[1] || 'png'
-        a.download = `image-${Date.now()}-${successCount}.${ext}`
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(objUrl)
-        successCount++
-        
-        await new Promise(resolve => setTimeout(resolve, 100))
-      } catch (err) {
-        console.error(err)
-        failCount++
+
+    try {
+      const timeStr = formatExportFileTime(new Date())
+      const { successCount, failCount } = await downloadImageIds(imageIds, `batch-${timeStr}`)
+
+      if (successCount === 0) {
+        showToast('下载失败', 'error')
+      } else if (failCount > 0) {
+        showToast(`部分下载失败：成功 ${successCount}，失败 ${failCount}`, 'error')
+      } else {
+        showToast(successCount > 1 ? `下载成功：${successCount} 张图片` : '下载成功', 'success')
       }
-    }
-    
-    if (successCount === 0) {
+    } catch (err) {
+      console.error(err)
       showToast('下载失败', 'error')
-    } else if (failCount > 0) {
-      showToast(`部分下载失败：成功 ${successCount}，失败 ${failCount}`, 'error')
-    } else {
-      showToast(successCount > 1 ? `下载成功：${successCount} 张图片` : '下载成功', 'success')
     }
     clearSelection()
   }, [tasks, selectedTaskIds, showToast, clearSelection])
