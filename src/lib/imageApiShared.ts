@@ -1,4 +1,4 @@
-import type { AppSettings, TaskParams } from '../types'
+import type { ApiErrorResponseSnapshot, AppSettings, TaskParams } from '../types'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -8,6 +8,25 @@ export const MIME_MAP: Record<string, string> = {
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
 export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
+const MAX_ERROR_RESPONSE_BODY_CHARS = 100 * 1024
+const ERROR_RESPONSE_HEADER_ALLOWLIST = new Set([
+  'content-type',
+  'date',
+  'request-id',
+  'x-request-id',
+  'openai-request-id',
+  'cf-ray',
+])
+
+export class ApiResponseError extends Error {
+  responseSnapshot: ApiErrorResponseSnapshot
+
+  constructor(message: string, responseSnapshot: ApiErrorResponseSnapshot) {
+    super(message)
+    this.name = 'ApiResponseError'
+    this.responseSnapshot = responseSnapshot
+  }
+}
 
 export interface CallApiOptions {
   settings: AppSettings
@@ -29,8 +48,6 @@ export interface CallApiResult {
   actualParamsList?: Array<Partial<TaskParams> | undefined>
   /** 每张图片对应的 API 改写提示词 */
   revisedPrompts?: Array<string | undefined>
-  /** API 是否使用流式响应 */
-  streamed?: boolean
   /** 并发多图请求中失败的单张请求 */
   failedRequests?: Array<{ requestIndex: number; error: string }>
 }
@@ -43,8 +60,62 @@ export function isDataUrl(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('data:')
 }
 
+function normalizeBase64Payload(value: string): string {
+  const payload = value.includes(',') ? value.slice(value.indexOf(',') + 1) : value
+  return payload.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+}
+
+function decodeBase64Prefix(value: string, maxBytes = 16): Uint8Array {
+  const normalized = normalizeBase64Payload(value)
+  const sample = normalized.slice(0, Math.ceil(maxBytes / 3) * 4)
+  try {
+    const binary = atob(sample)
+    const bytes = new Uint8Array(Math.min(binary.length, maxBytes))
+    for (let i = 0; i < bytes.length; i++) bytes[i] = binary.charCodeAt(i)
+    return bytes
+  } catch {
+    return new Uint8Array()
+  }
+}
+
+function detectImageMimeFromBase64(value: string): string | undefined {
+  const bytes = decodeBase64Prefix(value, 16)
+  if (bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) return 'image/png'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  if (bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) return 'image/webp'
+  if (bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) return 'image/gif'
+  return undefined
+}
+
 export function normalizeBase64Image(value: string, fallbackMime: string): string {
-  return value.startsWith('data:') ? value : `data:${fallbackMime};base64,${value}`
+  if (value.startsWith('data:')) return value
+  const mime = detectImageMimeFromBase64(value) ?? fallbackMime
+  return `data:${mime};base64,${value}`
 }
 
 function formatMiB(bytes: number): string {
@@ -97,36 +168,84 @@ async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> 
 export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
   if (isDataUrl(url)) return url
 
-  const response = await fetch(url, {
-    cache: 'no-store',
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(`图片 URL 下载失败：HTTP ${response.status}`)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      cache: 'no-store',
+      signal,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`图片已生成，但浏览器无法下载返回的图片 URL：${url}\n原因：${message}`)
   }
+
+  if (!response.ok) throw new Error(`图片 URL 下载失败：HTTP ${response.status}\nURL：${url}`)
 
   const blob = await response.blob()
   return blobToDataUrl(blob, fallbackMime)
 }
 
-export async function getApiErrorMessage(response: Response): Promise<string> {
-  let errorMsg = `HTTP ${response.status}`
-  try {
-    const errJson = await response.json()
-    if (errJson.error?.message) errorMsg = errJson.error.message
-    else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
-    else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
-    else if (typeof errJson.error === 'string') errorMsg = errJson.error
-    else if (errJson.message) errorMsg = errJson.message
-  } catch {
-    try {
-      errorMsg = await response.text()
-    } catch {
-      /* ignore */
-    }
+function pickSafeResponseHeaders(headers: Headers): Record<string, string> | undefined {
+  const picked: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    const normalizedKey = key.toLowerCase()
+    if (ERROR_RESPONSE_HEADER_ALLOWLIST.has(normalizedKey)) picked[normalizedKey] = value
+  })
+  return Object.keys(picked).length ? picked : undefined
+}
+
+function truncateErrorBody(body: string): { body: string; truncated?: boolean } {
+  if (body.length <= MAX_ERROR_RESPONSE_BODY_CHARS) return { body }
+  return {
+    body: body.slice(0, MAX_ERROR_RESPONSE_BODY_CHARS),
+    truncated: true,
   }
-  return errorMsg
+}
+
+function extractApiErrorMessage(parsed: unknown, fallback: string): string {
+  if (!parsed || typeof parsed !== 'object') return fallback
+  const record = parsed as Record<string, unknown>
+  const error = record.error
+  if (error && typeof error === 'object' && typeof (error as Record<string, unknown>).message === 'string') {
+    return (error as Record<string, string>).message
+  }
+  if (typeof record.detail === 'string') return record.detail
+  if (Array.isArray(record.detail)) {
+    return record.detail.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
+  }
+  if (typeof record.error === 'string') return record.error
+  if (typeof record.message === 'string') return record.message
+  return fallback
+}
+
+export async function readApiErrorResponse(response: Response): Promise<ApiResponseError> {
+  let errorMsg = `HTTP ${response.status}`
+  let rawBody = ''
+  try {
+    rawBody = await response.text()
+    if (rawBody) {
+      try {
+        errorMsg = extractApiErrorMessage(JSON.parse(rawBody), errorMsg)
+      } catch {
+        errorMsg = rawBody
+      }
+    }
+  } catch {
+    /* keep default status message */
+  }
+  const truncated = truncateErrorBody(rawBody)
+  return new ApiResponseError(errorMsg, {
+    status: response.status,
+    statusText: response.statusText,
+    url: response.url || undefined,
+    headers: pickSafeResponseHeaders(response.headers),
+    body: truncated.body,
+    truncated: truncated.truncated,
+  })
+}
+
+export function getApiErrorResponseSnapshot(err: unknown): ApiErrorResponseSnapshot | undefined {
+  return err instanceof ApiResponseError ? err.responseSnapshot : undefined
 }
 
 export function pickActualParams(source: unknown): Partial<TaskParams> {

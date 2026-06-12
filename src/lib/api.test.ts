@@ -143,7 +143,40 @@ describe('callImageApi', () => {
     )
   })
 
-  it('requests streaming image generations with max partial images', async () => {
+  it('attaches a bounded upstream response snapshot to API errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'upstream rejected request' },
+      request_id: 'req-123',
+    }), {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Request-Id': 'req-123',
+        Authorization: 'Bearer should-not-be-stored',
+      },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toMatchObject({
+      message: 'upstream rejected request',
+      responseSnapshot: {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'req-123',
+        },
+        body: expect.stringContaining('req-123'),
+      },
+    })
+  })
+
+  it('requests non-streaming b64 image generations', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), {
@@ -160,38 +193,53 @@ describe('callImageApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]
     expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
-      stream: true,
-      partial_images: 3,
+      response_format: 'b64_json',
     })
+    expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('stream')
+    expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('partial_images')
   })
 
-  it('uses the completed event from streaming image generations', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response([
-      'event: image_generation.partial_image',
-      'data: {"type":"image_generation.partial_image","b64_json":"cGFydGlhbA=="}',
-      '',
-      'event: image_generation.completed',
-      'data: {"type":"image_generation.completed","b64_json":"ZmluYWw="}',
-      '',
-    ].join('\n'), {
+  it('preserves the actual image mime when upstream returns non-png base64', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'UklGRiQAAABXRUJQVlA4IAAAAAA=' }],
+    }), {
       status: 200,
-      headers: { 'Content-Type': 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json' },
     }))
 
     const result = await callImageApi({
       settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
       prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
+      params: { ...DEFAULT_PARAMS, output_format: 'png' },
       inputImageDataUrls: [],
     })
 
-    expect(result).toMatchObject({
-      images: ['data:image/png;base64,ZmluYWw='],
-      streamed: true,
-    })
+    expect(result.images[0]).toBe('data:image/webp;base64,UklGRiQAAABXRUJQVlA4IAAAAAA=')
   })
 
-  it('requests streaming image edits with max partial images', async () => {
+  it('includes the returned image URL when browser download fails', async () => {
+    const imageUrl = 'https://cdn.example.com/generated.webp'
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      if (String(input).endsWith('/images/generations')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          data: [{ url: imageUrl }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return Promise.reject(new TypeError('Failed to fetch'))
+    })
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow(`图片已生成，但浏览器无法下载返回的图片 URL：${imageUrl}`)
+  })
+
+  it('requests non-streaming b64 image edits with repeated image fields', async () => {
     const nativeFetch = globalThis.fetch.bind(globalThis)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       if (typeof input === 'string' && input.startsWith('data:')) return nativeFetch(input, init)
@@ -212,18 +260,19 @@ describe('callImageApi', () => {
 
     const [, init] = fetchMock.mock.calls.find(([input]) => typeof input === 'string' && input.endsWith('/images/edits')) ?? []
     const body = (init as RequestInit).body as FormData
-    expect(body.get('stream')).toBe('true')
-    expect(body.get('partial_images')).toBe('3')
+    expect(body.get('response_format')).toBe('b64_json')
+    expect(body.get('stream')).toBeNull()
+    expect(body.get('partial_images')).toBeNull()
+    expect(body.getAll('image')).toHaveLength(1)
+    expect(body.getAll('image[]')).toHaveLength(0)
   })
 
-  it('requests streaming for sync OpenAI-compatible custom providers', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response([
-      'event: image_generation.completed',
-      'data: {"type":"image_generation.completed","b64_json":"ZmluYWw="}',
-      '',
-    ].join('\n'), {
+  it('does not add streaming fields for sync OpenAI-compatible custom providers', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'ZmluYWw=' }],
+    }), {
       status: 200,
-      headers: { 'Content-Type': 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json' },
     }))
 
     const result = await callImageApi({
@@ -258,13 +307,10 @@ describe('callImageApi', () => {
     })
 
     const [, init] = fetchMock.mock.calls[0]
-    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
-      stream: true,
-      partial_images: 3,
-    })
+    expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('stream')
+    expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('partial_images')
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
-      streamed: true,
     })
   })
 

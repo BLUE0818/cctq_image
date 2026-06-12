@@ -7,7 +7,6 @@ import {
   type CallApiOptions,
   type CallApiResult,
   fetchImageUrlAsDataUrl,
-  getApiErrorMessage,
   getDataUrlDecodedByteSize,
   getDataUrlEncodedByteSize,
   isDataUrl,
@@ -16,10 +15,11 @@ import {
   MIME_MAP,
   normalizeBase64Image,
   pickActualParams,
+  readApiErrorResponse,
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
-const IMAGE_STREAM_PARTIAL_IMAGES = 3
+const IMAGE_RESPONSE_FORMAT = 'b64_json'
 
 function appendQuery(path: string, query?: Record<string, string>): string {
   if (!query || !Object.keys(query).length) return path
@@ -32,27 +32,6 @@ function createOpenAICompatiblePaths(customProvider?: CustomProviderDefinition |
   return {
     generationPath: 'images/generations',
     editPath: 'images/edits',
-  }
-}
-
-function isImagesApiPath(path: string): boolean {
-  const normalized = path
-    .split('?')[0]
-    .trim()
-    .replace(/^\/+/, '')
-    .replace(/^v1\//, '')
-  return normalized === 'images/generations' || normalized === 'images/edits'
-}
-
-function shouldStreamCustomSubmit(mapping: CustomProviderSubmitMapping): boolean {
-  return (mapping.method ?? 'POST') !== 'GET' && !mapping.taskIdPath && isImagesApiPath(mapping.path)
-}
-
-function addImageStreamFields(body: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...body,
-    stream: true,
-    partial_images: IMAGE_STREAM_PARTIAL_IMAGES,
   }
 }
 
@@ -108,10 +87,6 @@ function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function isImagesStreamResponse(response: Response): boolean {
-  return response.headers.get('Content-Type')?.toLowerCase().includes('text/event-stream') ?? false
-}
-
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
@@ -149,83 +124,12 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   }
 }
 
-function parseSseEventBlock(block: string): { event?: string; data?: string } {
-  const dataLines: string[] = []
-  let event: string | undefined
-
-  for (const line of block.split('\n')) {
-    if (!line || line.startsWith(':')) continue
-    const separatorIndex = line.indexOf(':')
-    const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line
-    const value = separatorIndex >= 0 ? line.slice(separatorIndex + 1).replace(/^ /, '') : ''
-    if (field === 'event') event = value
-    else if (field === 'data') dataLines.push(value)
-  }
-
-  return { event, data: dataLines.length ? dataLines.join('\n') : undefined }
-}
-
-function collectCompletedStreamEvent(payload: unknown, eventName: string | undefined, completed: ImageApiResponse['data']) {
-  if (!payload || typeof payload !== 'object') return
-
-  const record = payload as Record<string, unknown>
-  const type = typeof record.type === 'string' ? record.type : eventName
-  const isCompleted = typeof type === 'string' && type.endsWith('.completed')
-
-  if (Array.isArray(record.data) && (isCompleted || !type)) {
-    completed.push(...record.data as ImageApiResponse['data'])
-    return
-  }
-
-  if (isCompleted || (!type && (typeof record.b64_json === 'string' || typeof record.url === 'string'))) {
-    completed.push(record as ImageApiResponse['data'][number])
-  }
-}
-
-async function parseImagesApiStreamResponse(response: Response, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('接口未返回可读取的流式响应')
-
-  const decoder = new TextDecoder()
-  const completed: ImageApiResponse['data'] = []
-  let buffer = ''
-
-  const handleBlock = (block: string) => {
-    const { event, data } = parseSseEventBlock(block)
-    if (!data || data.trim() === '[DONE]') return
-
-    try {
-      collectCompletedStreamEvent(JSON.parse(data), event, completed)
-    } catch {
-      /* ignore non-JSON stream events */
-    }
-  }
-
-  const drainBuffer = (final = false) => {
-    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-    let separatorIndex = buffer.indexOf('\n\n')
-    while (separatorIndex >= 0) {
-      handleBlock(buffer.slice(0, separatorIndex))
-      buffer = buffer.slice(separatorIndex + 2)
-      separatorIndex = buffer.indexOf('\n\n')
-    }
-    if (final && buffer.trim()) handleBlock(buffer)
-  }
-
-  while (true) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    drainBuffer()
-  }
-
-  buffer += decoder.decode()
-  drainBuffer(true)
-
-  return {
-    ...await parseImagesApiResponse({ data: completed }, mime, signal),
-    streamed: true,
+async function parseResponseJson(response: Response): Promise<unknown> {
+  const text = await response.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(text ? `接口返回了非 JSON 响应：${text}` : '接口返回了空响应')
   }
 }
 
@@ -311,8 +215,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       formData.append('size', params.size)
       formData.append('output_format', params.output_format)
       formData.append('moderation', params.moderation)
-      formData.append('stream', 'true')
-      formData.append('partial_images', String(IMAGE_STREAM_PARTIAL_IMAGES))
+      formData.append('response_format', IMAGE_RESPONSE_FORMAT)
 
       if (!profile.codexCli) {
         formData.append('quality', params.quality)
@@ -346,7 +249,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       for (let i = 0; i < imageBlobs.length; i++) {
         const blob = imageBlobs[i]
         const ext = blob.type.split('/')[1] || 'png'
-        formData.append('image[]', blob, `input-${i + 1}.${ext}`)
+        formData.append('image', blob, `input-${i + 1}.${ext}`)
       }
 
       if (maskBlob) {
@@ -367,8 +270,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
         size: params.size,
         output_format: params.output_format,
         moderation: params.moderation,
-        stream: true,
-        partial_images: IMAGE_STREAM_PARTIAL_IMAGES,
+        response_format: IMAGE_RESPONSE_FORMAT,
       }
 
       if (!profile.codexCli) {
@@ -395,14 +297,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
     }
 
     if (!response.ok) {
-      throw new Error(await getApiErrorMessage(response))
+      throw await readApiErrorResponse(response)
     }
 
-    if (isImagesStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, controller.signal)
-    }
-
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return parseImagesApiResponse(await parseResponseJson(response) as ImageApiResponse, mime, controller.signal)
   } finally {
     clearTimeout(timeoutId)
   }
@@ -490,10 +388,7 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
   const formData = new FormData()
   const body = resolveTemplateValue(mapping.body ?? {}, context)
   if (body && typeof body === 'object' && !Array.isArray(body)) {
-    const bodyRecord = shouldStreamCustomSubmit(mapping)
-      ? addImageStreamFields(body as Record<string, unknown>)
-      : body as Record<string, unknown>
-    for (const [key, value] of Object.entries(bodyRecord)) {
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
       if (value === undefined || value === null) continue
       if (Array.isArray(value)) {
         for (const item of value) formData.append(key, String(item))
@@ -586,7 +481,7 @@ async function submitCustomRequest(
       const bodyRecord = resolvedBody && typeof resolvedBody === 'object' && !Array.isArray(resolvedBody)
         ? resolvedBody as Record<string, unknown>
         : {}
-      body = JSON.stringify(shouldStreamCustomSubmit(mapping) ? addImageStreamFields(bodyRecord) : bodyRecord)
+      body = JSON.stringify(bodyRecord)
     }
   }
 
@@ -598,11 +493,8 @@ async function submitCustomRequest(
     signal: controller.signal,
   })
 
-  if (!response.ok) throw new Error(await getApiErrorMessage(response))
-  if (shouldStreamCustomSubmit(mapping) && isImagesStreamResponse(response)) {
-    return { result: await parseImagesApiStreamResponse(response, mime, controller.signal) }
-  }
-  return { payload: await response.json() }
+  if (!response.ok) throw await readApiErrorResponse(response)
+  return { payload: await parseResponseJson(response) }
 }
 
 async function pollCustomTaskResult(
@@ -637,10 +529,10 @@ async function pollCustomTaskResult(
 
       if (!taskResponse.ok) {
         if (isRetryablePollingStatus(taskResponse.status)) continue
-        throw new Error(await getApiErrorMessage(taskResponse))
+        throw await readApiErrorResponse(taskResponse)
       }
 
-      taskPayload = await taskResponse.json()
+      taskPayload = await parseResponseJson(taskResponse)
     } catch (err) {
       if (!signal?.aborted && isRecoverablePollingError(err)) continue
       throw err

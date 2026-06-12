@@ -5,6 +5,7 @@ import { isApiProxyAvailable, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData } from '../store'
 import {
   createDefaultOpenAIProfile,
+  DEFAULT_CODEX_CLI,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
@@ -59,6 +60,7 @@ const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
       moderation: '$params.moderation',
       output_compression: '$params.output_compression',
       n: '$params.n',
+      response_format: 'b64_json',
     },
     result: {
       imageUrlPaths: ['data.*.url'],
@@ -78,9 +80,10 @@ const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
       moderation: '$params.moderation',
       output_compression: '$params.output_compression',
       n: '$params.n',
+      response_format: 'b64_json',
     },
     files: [
-      { field: 'image[]', source: 'inputImages', array: true },
+      { field: 'image', source: 'inputImages', array: true },
       { field: 'mask', source: 'mask' },
     ],
     result: {
@@ -118,7 +121,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.apiKey === '' &&
     profile.model === DEFAULT_IMAGES_MODEL &&
     profile.timeout === DEFAULT_SETTINGS.timeout &&
-    profile.codexCli === false &&
+    profile.codexCli === DEFAULT_CODEX_CLI &&
     profile.apiProxy === false
 }
 
@@ -143,7 +146,7 @@ const CUSTOM_PROVIDER_LLM_PROMPT = `# 角色
 2. 如果当前环境支持读取链接，主动读取；否则要求用户粘贴文档内容。
 3. 在未获得文档前不要猜测，不要生成占位配置。
 4. 从文档中判断提交接口、图生图接口、异步任务查询接口、状态值、结果图片路径。
-5. 如果文档中明确了 API Base URL，在 profiles 中填入；model 只能使用 "gpt-image-2" 或 "gpt-image-2-pro"，其他模型统一写 "gpt-image-2-pro"；如果未明确 API Base URL，baseUrl 留空，由用户稍后填写。
+5. 如果文档中明确了 API Base URL，在 profiles 中填入；model 只能使用 "gpt-image-2" 或 "gpt-image-2-pro"，其他模型统一写 "gpt-image-2"；如果未明确 API Base URL，baseUrl 留空，由用户稍后填写。
 6. 输出最终 JSON；不要索要 API Key。
 
 # 输出结构
@@ -191,7 +194,7 @@ body 模板变量：
 - $mask.dataUrl：遮罩图 data URL；没有遮罩时会自动省略该字段。
 
 multipart files 示例：
-- {"field":"image[]","source":"inputImages","array":true}
+- {"field":"image","source":"inputImages","array":true}
 - {"field":"mask","source":"mask"}
 
 ## profiles 元素
@@ -199,7 +202,7 @@ multipart files 示例：
 - name：配置名称，方便用户识别。
 - provider：对应 customProviders 中某个元素的 id。
 - baseUrl：API Base URL。如果文档明确给出，填入完整基础地址；否则留空字符串 ""。
-- model：模型 ID，仅支持 "gpt-image-2" 或 "gpt-image-2-pro"；如果文档给出其他模型，仍使用 "gpt-image-2-pro"。
+- model：模型 ID，仅支持 "gpt-image-2" 或 "gpt-image-2-pro"；如果文档给出其他模型，仍使用 "gpt-image-2"。
 
 profiles 中不要包含 apiKey（用户导入后自行填写）。
 
@@ -212,10 +215,10 @@ profiles 中不要包含 apiKey（用户导入后自行填写）。
 - 如果结果 URL 是数组，路径必须写到数组元素，例如 data.result.images.*.url.*。
 
 ## 同步接口示例
-{"customProviders":[{"id":"custom-example-sync","name":"示例同步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n"},"files":[{"field":"image[]","source":"inputImages","array":true},{"field":"mask","source":"mask"}],"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}}}],"profiles":[{"name":"示例同步服务商","provider":"custom-example-sync","baseUrl":"https://api.example.com/v1","model":"gpt-image-2-pro",}]}
+{"customProviders":[{"id":"custom-example-sync","name":"示例同步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n","response_format":"b64_json"},"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n","response_format":"b64_json"},"files":[{"field":"image","source":"inputImages","array":true},{"field":"mask","source":"mask"}],"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}}}],"profiles":[{"name":"示例同步服务商","provider":"custom-example-sync","baseUrl":"https://api.example.com/v1","model":"gpt-image-2",}]}
 
 ## 异步接口示例
-{"customProviders":[{"id":"custom-example-async","name":"示例异步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n"},"taskIdPath":"data"},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n"},"files":[{"field":"image[]","source":"inputImages","array":true}],"taskIdPath":"data"},"poll":{"path":"images/tasks/{task_id}","method":"GET","intervalSeconds":5,"statusPath":"data.status","successValues":["SUCCESS"],"failureValues":["FAILURE"],"errorPath":"data.fail_reason","result":{"imageUrlPaths":["data.data.data.*.url"],"b64JsonPaths":["data.data.data.*.b64_json"]}}}],"profiles":[{"name":"示例异步服务商","provider":"custom-example-async","baseUrl":"","model":"gpt-image-2",}]}
+{"customProviders":[{"id":"custom-example-async","name":"示例异步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n","response_format":"b64_json"},"taskIdPath":"data"},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n","response_format":"b64_json"},"files":[{"field":"image","source":"inputImages","array":true}],"taskIdPath":"data"},"poll":{"path":"images/tasks/{task_id}","method":"GET","intervalSeconds":5,"statusPath":"data.status","successValues":["SUCCESS"],"failureValues":["FAILURE"],"errorPath":"data.fail_reason","result":{"imageUrlPaths":["data.data.data.*.url"],"b64JsonPaths":["data.data.data.*.b64_json"]}}}],"profiles":[{"name":"示例异步服务商","provider":"custom-example-async","baseUrl":"","model":"gpt-image-2",}]}
 
 ## 统一任务接口示例
 {"customProviders":[{"id":"custom-example-task","name":"示例任务服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","n":"$params.n","size":"$params.size","resolution":"2k","quality":"$params.quality","image_urls":"$inputImages.dataUrls"},"taskIdPath":"data.0.task_id"},"poll":{"path":"tasks/{task_id}","method":"GET","query":{"language":"zh"},"intervalSeconds":5,"statusPath":"data.status","successValues":["completed"],"failureValues":["failed","cancelled"],"errorPath":"data.error.message","result":{"imageUrlPaths":["data.result.images.*.url.*"],"b64JsonPaths":[]}}}],"profiles":[{"name":"示例任务服务商","provider":"custom-example-task","baseUrl":"","model":"gpt-image-2",}]}`
@@ -927,7 +930,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    开启后应用 Codex CLI 实际支持的参数。支持查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">codexCli=true</code>。
+                    开启后应用 Codex CLI 实际支持的参数。
                   </div>
                 </div>
               )}
@@ -985,9 +988,6 @@ export default function SettingsModal() {
                     )}
                   </button>
                 </div>
-                <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code>
-                </div>
               </div>
 
               <label className="block">
@@ -1009,9 +1009,6 @@ export default function SettingsModal() {
                     <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
                   ) : (
                     <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
-                  )}
-                  {activeProfile.provider === 'openai' && (
-                    <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
                   )}
                 </div>
               </label>

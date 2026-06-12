@@ -127,6 +127,15 @@ export interface MaskDraft {
 
 export type TaskStatus = 'running' | 'done' | 'error'
 
+export interface ApiErrorResponseSnapshot {
+  status?: number
+  statusText?: string
+  url?: string
+  headers?: Record<string, string>
+  body: string
+  truncated?: boolean
+}
+
 export interface TaskRecord {
   id: string
   prompt: string
@@ -165,6 +174,7 @@ export interface TaskRecord {
   outputErrors?: Array<{ requestIndex: number; error: string }>
   status: TaskStatus
   error: string | null
+  errorResponse?: ApiErrorResponseSnapshot
   createdAt: number
   finishedAt: number | null
   /** 总耗时毫秒 */

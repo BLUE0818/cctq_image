@@ -30,6 +30,7 @@ import {
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
+import { getApiErrorResponseSnapshot } from './lib/imageApiShared'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
@@ -1094,7 +1095,7 @@ async function executeTask(taskId: string) {
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
     )
     const hasRevisedPromptValue = shouldStoreRevisedPrompts && result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
-    if (taskProvider === 'openai' && !activeProfile.codexCli && !result.streamed) {
+    if (taskProvider === 'openai' && !activeProfile.codexCli) {
       if (promptWasRevised) {
         showCodexCliPrompt()
       } else if (!hasRevisedPromptValue) {
@@ -1166,6 +1167,7 @@ async function executeTask(taskId: string) {
       updateTaskInStore(taskId, {
         status: 'error',
         error: err instanceof Error ? err.message : String(err),
+        errorResponse: getApiErrorResponseSnapshot(err),
         falRecoverable: false,
         customRecoverable: false,
         finishedAt: Date.now(),

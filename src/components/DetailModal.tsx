@@ -206,6 +206,9 @@ export default function DetailModal() {
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
+  const errorResponseText = task.errorResponse
+    ? JSON.stringify(task.errorResponse, null, 2)
+    : ''
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -257,7 +260,10 @@ export default function DetailModal() {
   }
 
   const handleCopyError = async () => {
-    const errorText = task.error || '生成失败'
+    const errorText = [
+      task.error || '生成失败',
+      errorResponseText ? `\n上游响应：\n${errorResponseText}` : '',
+    ].join('')
     try {
       await copyTextToClipboard(errorText)
       showToast('完整报错已复制', 'success')
@@ -551,6 +557,14 @@ export default function DetailModal() {
               >
                 {task.error || '生成失败'}
               </p>
+              {errorResponseText && (
+                <div className="mt-3 max-h-48 overflow-auto rounded border border-red-200/70 bg-red-50/70 p-3 text-left dark:border-red-400/20 dark:bg-red-950/20">
+                  <div className="mb-2 text-xs font-medium text-red-500">上游响应</div>
+                  <pre className="whitespace-pre-wrap break-all text-xs leading-5 text-red-700 dark:text-red-200">
+                    {errorResponseText}
+                  </pre>
+                </div>
+              )}
               <div className="mt-3 flex items-center justify-center gap-2">
                 <button
                   type="button"

@@ -66,11 +66,9 @@ function ButtonTooltip({ visible, text }: { visible: boolean; text: ReactNode })
   if (!visible) return null
 
   return (
-    <span className="absolute left-1/2 top-0 -translate-x-1/2">
-      <ViewportTooltip visible className="z-10 whitespace-nowrap">
-        {text}
-      </ViewportTooltip>
-    </span>
+    <ViewportTooltip visible className="z-10 whitespace-nowrap">
+      {text}
+    </ViewportTooltip>
   )
 }
 
@@ -232,12 +230,14 @@ export default function InputBar() {
   const qualityHintTimerRef = useRef<number | null>(null)
   const imageHintTimerRef = useRef<number | null>(null)
   const nLimitHintTimerRef = useRef<number | null>(null)
+  const nTimeoutHintTimerRef = useRef<number | null>(null)
   const [outputCompressionInput, setOutputCompressionInput] = useState(
     params.output_compression == null ? '' : String(params.output_compression),
   )
   const [nInput, setNInput] = useState(String(params.n))
   const [nInputFocused, setNInputFocused] = useState(false)
   const [nLimitHintVisible, setNLimitHintVisible] = useState(false)
+  const [nTimeoutHintVisible, setNTimeoutHintVisible] = useState(false)
   const dragCounter = useRef(0)
   const isMobile = useIsMobile()
 
@@ -260,6 +260,7 @@ export default function InputBar() {
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = false && inputImages.length === 0
   const nLimitHintText = `最大请求数量为 ${outputImageLimit}`
+  const nTimeoutHintText = '大于 1 的数量很可能会超时'
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : normalizeImageSize(params.size) || DEFAULT_PARAMS.size
@@ -359,6 +360,9 @@ export default function InputBar() {
     if (nLimitHintTimerRef.current != null) {
       window.clearTimeout(nLimitHintTimerRef.current)
     }
+    if (nTimeoutHintTimerRef.current != null) {
+      window.clearTimeout(nTimeoutHintTimerRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -429,6 +433,17 @@ export default function InputBar() {
       window.clearTimeout(nLimitHintTimerRef.current)
       nLimitHintTimerRef.current = null
     }
+  }, [])
+
+  const showNTimeoutHint = useCallback(() => {
+    setNTimeoutHintVisible(true)
+    if (nTimeoutHintTimerRef.current != null) {
+      window.clearTimeout(nTimeoutHintTimerRef.current)
+    }
+    nTimeoutHintTimerRef.current = window.setTimeout(() => {
+      setNTimeoutHintVisible(false)
+      nTimeoutHintTimerRef.current = null
+    }, 2000)
   }, [])
 
   const handleNInputChange = useCallback((value: string) => {
@@ -1325,7 +1340,11 @@ export default function InputBar() {
         <input
           value={nInput}
           onChange={(e) => handleNInputChange(e.target.value)}
-          onFocus={() => setNInputFocused(true)}
+          onFocus={() => {
+            setNInputFocused(true)
+            showNTimeoutHint()
+          }}
+          onClick={showNTimeoutHint}
           onBlur={() => {
             setNInputFocused(false)
             commitN()
@@ -1345,7 +1364,10 @@ export default function InputBar() {
           max={outputImageLimit}
           className="px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] focus:outline-none text-xs transition-all duration-200 shadow-sm"
         />
-        <ButtonTooltip visible={nLimitHintVisible} text={nLimitHintText} />
+        <ButtonTooltip
+          visible={nLimitHintVisible || nTimeoutHintVisible}
+          text={nLimitHintVisible ? nLimitHintText : nTimeoutHintText}
+        />
       </label>
     </div>
   )
