@@ -811,6 +811,29 @@ export default function InputBar() {
     document.addEventListener('selectionchange', handleSelectionChange)
     return () => document.removeEventListener('selectionchange', handleSelectionChange)
   }, [])
+
+  // 点击屏幕外部、空白处、卡片间隙等，使输入栏相关输入框失焦
+  useEffect(() => {
+    const handleGlobalMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (!target) return
+
+      if (document.activeElement instanceof HTMLElement) {
+        // 如果当前聚焦的元素属于输入栏（主输入框、数量或压缩率输入框等）
+        if (document.activeElement.closest('[data-input-bar]')) {
+          // 如果点击的区域不在输入栏内部
+          if (!target.closest('[data-input-bar]')) {
+            document.activeElement.blur()
+          }
+        }
+      }
+    }
+
+    document.addEventListener('mousedown', handleGlobalMouseDown, true)
+    return () => {
+      document.removeEventListener('mousedown', handleGlobalMouseDown, true)
+    }
+  }, [])
   useEffect(() => {
     adjustTextareaHeight()
   }, [inputImages.length, Boolean(maskDraft), maskPreviewUrl, adjustTextareaHeight])
