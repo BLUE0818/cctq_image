@@ -34,8 +34,7 @@ select,
 }
 
 * {
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  /* Firefox fallback moved to @-moz-document */
 }
 
 img {
@@ -56,9 +55,57 @@ body.drag-selecting * {
   user-select: none !important;
 }
 
-@media (prefers-color-scheme: dark) {
+@-moz-document url-prefix() {
   * {
-    scrollbar-color: #3f3f46 transparent;
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  @media (prefers-color-scheme: dark) {
+    * {
+      scrollbar-color: #3f3f46 transparent;
+    }
+  }
+  .tiny-scrollbar {
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(156, 163, 175, 0.5) transparent !important;
+  }
+  @media (prefers-color-scheme: dark) {
+    .tiny-scrollbar {
+      scrollbar-color: rgba(113, 113, 122, 0.5) transparent !important;
+    }
+  }
+}
+
+.tiny-scrollbar::-webkit-scrollbar {
+  height: 6px !important;
+  width: 6px !important;
+  background: transparent !important;
+}
+.tiny-scrollbar::-webkit-scrollbar-track {
+  background: transparent !important;
+  border: none !important;
+}
+.tiny-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.5) !important;
+  border-radius: 6px !important;
+  border: 1px solid transparent !important;
+  background-clip: content-box !important;
+}
+.tiny-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.8) !important;
+}
+.tiny-scrollbar::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tiny-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(113, 113, 122, 0.5) !important;
+  }
+  .tiny-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(113, 113, 122, 0.8) !important;
   }
 }
 
@@ -67,7 +114,7 @@ body.drag-selecting * {
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 隐藏 number input 的增减按钮 */
+/* 隐藏 number input 的增减按?*/
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
@@ -218,5 +265,45 @@ input[type="number"] {
   textarea,
   select {
     font-size: 16px;
+  }
+}
+
+/* contentEditable 中的 @图N 胶囊 tag */
+.mention-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  margin: 0 4px;
+  border-radius: 9999px;
+  background: #dbeafe;
+  color: #2563eb;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: baseline;
+  user-select: all;
+  cursor: default;
+}
+
+.mention-tag::selection,
+.mention-tag *::selection {
+  background: transparent;
+  color: inherit;
+}
+
+.mention-tag:focus,
+.mention-tag.selected {
+  outline: 1.5px solid #93b4e8;
+  outline-offset: 0px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mention-tag {
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+  }
+  .mention-tag:focus,
+  .mention-tag.selected {
+    outline-color: #7aa2d4;
   }
 }
