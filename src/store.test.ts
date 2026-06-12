@@ -200,9 +200,9 @@ describe('reused task API profile', () => {
 
   it('does not resolve a task API profile by stored name or model', () => {
     const resolved = getTaskApiProfile(useStore.getState().settings, task({
-      apiProvider: 'fal',
-      apiProfileName: falProfile.name,
-      apiModel: falProfile.model,
+      apiProvider: customProvider.id,
+      apiProfileName: customProfile.name,
+      apiModel: customProfile.model,
     }))
 
     expect(resolved).toBeNull()
