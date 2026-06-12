@@ -2,7 +2,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { TaskRecord } from './types'
-import { editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
+import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
+
+vi.mock('./lib/db', () => ({
+  CURRENT_THUMBNAIL_VERSION: 1,
+  getAllTasks: vi.fn(async () => []),
+  putTask: vi.fn(async () => undefined),
+  deleteTask: vi.fn(async () => undefined),
+  clearTasks: vi.fn(async () => undefined),
+  getImage: vi.fn(async () => null),
+  getImageThumbnail: vi.fn(async () => null),
+  getStoredFreshImageThumbnail: vi.fn(async () => null),
+  getAllImageIds: vi.fn(async () => []),
+  getAllImages: vi.fn(async () => []),
+  putImage: vi.fn(async () => undefined),
+  putImageThumbnail: vi.fn(async () => undefined),
+  deleteImage: vi.fn(async () => undefined),
+  clearImages: vi.fn(async () => undefined),
+  storeImage: vi.fn(async (dataUrl: string) => ({ id: dataUrl, dataUrl })),
+}))
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 
@@ -265,5 +283,34 @@ describe('reused task API profile', () => {
       cancelText: '放弃提交',
     }))
     expect(state.showSettings).toBe(false)
+  })
+})
+
+describe('failed task cleanup', () => {
+  beforeEach(() => {
+    useStore.setState({
+      tasks: [],
+      selectedTaskIds: [],
+      inputImages: [],
+      showToast: vi.fn(),
+    })
+  })
+
+  it('clears only failed tasks', async () => {
+    const failedA = task({ id: 'failed-a', status: 'error', error: '生成失败', outputImages: ['failed-image-a'] })
+    const failedB = task({ id: 'failed-b', status: 'error', error: '生成失败', outputImages: ['failed-image-b'] })
+    const done = task({ id: 'done-task', status: 'done', outputImages: ['done-image'] })
+    const running = task({ id: 'running-task', status: 'running', finishedAt: null, elapsed: null })
+    useStore.setState({
+      tasks: [failedA, done, failedB, running],
+      selectedTaskIds: ['failed-a', 'done-task', 'failed-b'],
+    })
+
+    await clearFailedTasks()
+
+    const state = useStore.getState()
+    expect(state.tasks.map((item) => item.id)).toEqual(['done-task', 'running-task'])
+    expect(state.selectedTaskIds).toEqual(['done-task'])
+    expect(state.showToast).toHaveBeenCalledWith('已删除 2 条记录', 'success')
   })
 })

@@ -1331,6 +1331,16 @@ export async function removeMultipleTasks(taskIds: string[]) {
   showToast(`已删除 ${taskIds.length} 条记录`, 'success')
 }
 
+/** 删除所有失败任务 */
+export async function clearFailedTasks() {
+  const failedTaskIds = useStore.getState().tasks
+    .filter((task) => task.status === 'error')
+    .map((task) => task.id)
+
+  if (!failedTaskIds.length) return
+  await removeMultipleTasks(failedTaskIds)
+}
+
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
   const { tasks, setTasks, inputImages, showToast } = useStore.getState()
