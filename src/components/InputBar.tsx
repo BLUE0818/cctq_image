@@ -12,6 +12,7 @@ import { getSafeBoundingClientRect } from '../lib/domRect'
 import Select from './Select'
 import SizePickerModal from './SizePickerModal'
 import ViewportTooltip from './ViewportTooltip'
+import { CloseIcon } from './icons'
 
 
 /** 获取 contentEditable 中光标的纯文本偏移量 */
@@ -224,6 +225,7 @@ export default function InputBar() {
   const prevHeightRef = useRef(42)
 
   const [isDragging, setIsDragging] = useState(false)
+  const [isSingleLine, setIsSingleLine] = useState(true)
   const [submitHover, setSubmitHover] = useState(false)
   const [attachHover, setAttachHover] = useState(false)
   const [compressionHintVisible, setCompressionHintVisible] = useState(false)
@@ -339,7 +341,14 @@ export default function InputBar() {
   }, [inputImages, prompt, setPrompt])
 
 
-
+  const handleClearPrompt = useCallback(() => {
+    isUserInputRef.current = false
+    setPrompt('')
+    if (textareaRef.current) {
+      textareaRef.current.innerHTML = ''
+      textareaRef.current.focus()
+    }
+  }, [setPrompt])
   useEffect(() => {
     setOutputCompressionInput(
       params.output_compression == null ? '' : String(params.output_compression),
@@ -754,6 +763,9 @@ export default function InputBar() {
     const minH = 42
     const desired = Math.max(scrollH, minH)
     const targetH = desired > maxH ? maxH : desired
+
+    // 判断是否只有一行
+    setIsSingleLine(desired <= minH)
 
     // 2. 将高度设回上一次的实际高度，强制重绘，准备开始动画
     el.style.height = prevHeightRef.current + 'px'
@@ -1567,9 +1579,26 @@ export default function InputBar() {
                   }
                 }
               }}
-              data-placeholder="描述你想生成的图片，可输入 @ 指定当前参考图..."
-              className="min-h-[42px] w-full whitespace-pre-wrap break-words rounded-2xl border border-gray-200/60 bg-white/50 px-4 py-3 text-sm leading-relaxed shadow-sm outline-none transition-[border-color,box-shadow] duration-200 focus:ring-1 focus:ring-blue-300/40 empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-100 dark:focus:ring-blue-500/30 dark:empty:before:text-gray-500"
+              aria-label="描述你想生成的图片，可输入 @ 指定当前参考图..."
+              className="col-start-1 row-start-1 min-h-[42px] w-full overflow-hidden ios-rounded-scroll-fix whitespace-pre-wrap break-words rounded-2xl border border-gray-200/60 bg-white/50 pl-4 pr-10 py-3 text-sm leading-relaxed shadow-sm outline-none transition-[border-color,box-shadow] duration-200 focus:ring-1 focus:ring-blue-300/40 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-100 dark:focus:ring-blue-500/30"
             />
+            {prompt.length === 0 && (
+              <div className="prompt-placeholder col-start-1 row-start-1 pointer-events-none pl-4 pr-10 py-3 text-sm leading-relaxed text-gray-400 dark:text-gray-500">
+                描述你想生成的图片，可输入 @ 指定当前参考图...
+              </div>
+            )}
+            {prompt.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearPrompt}
+                className={`absolute right-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.08] rounded-full p-1 transition-all duration-200 focus:outline-none z-10 flex items-center justify-center ${
+                  isSingleLine ? 'top-1/2 -translate-y-1/2' : 'top-3'
+                }`}
+                title="清空文本"
+              >
+                <CloseIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {/* 参数 + 按钮 */}

@@ -307,3 +307,9 @@ input[type="number"] {
     outline-color: #7aa2d4;
   }
 }
+
+/* 修复 iOS/Webkit 上带圆角的滚动容器内容/滚动条溢出的 bug */
+.ios-rounded-scroll-fix {
+  isolation: isolate;
+  -webkit-mask-image: -webkit-radial-gradient(white, black);
+}
