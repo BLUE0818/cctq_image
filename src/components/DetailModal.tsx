@@ -182,12 +182,12 @@ export default function DetailModal() {
     }
   }, [maskTargetSrc, maskSrc])
 
-  if (!task) return null
-
   const outputLen = outputSlots.length
   useEffect(() => {
     if (outputLen > 0 && imageIndex >= outputLen) setImageIndex(outputLen - 1)
   }, [imageIndex, outputLen])
+
+  if (!task) return null
 
   const currentImageRatio = currentOutputImageId ? imageRatios[currentOutputImageId] : ''
   const currentImageSize = currentOutputImageId ? imageSizes[currentOutputImageId] : ''
