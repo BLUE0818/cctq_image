@@ -1,4 +1,4 @@
-import { clearFailedTasks, useStore } from '../store'
+import { clearFailedTasks, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from '../store'
 import Select from './Select'
 import { TrashIcon } from './icons'
 
@@ -11,18 +11,25 @@ export default function SearchBar() {
   const setFilterFavorite = useStore((s) => s.setFilterFavorite)
   const tasks = useStore((s) => s.tasks)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
-  const failedCount = tasks.filter((task) => task.status === 'error').length
+  const failedTaskIds = tasks
+    .filter((task) => taskMatchesFilterStatus(task, 'error'))
+    .filter((task) => {
+      if (filterFavorite && !task.isFavorite) return false
+      return taskMatchesSearchQuery(task, searchQuery)
+    })
+    .map((task) => task.id)
+  const failedCount = failedTaskIds.length
 
   const handleClearFailed = () => {
     if (failedCount === 0) return
 
     setConfirmDialog({
       title: '清除失败记录',
-      message: `是否清除所有生成失败的记录？\n将删除 ${failedCount} 条失败记录，关联的孤立图片资源也会被清理。`,
-      confirmText: '删除',
+      message: `确定清除筛选范围内的失败记录吗？\n纯失败任务会被删除；部分失败任务只会清除失败标记，保留已成功图片。共 ${failedCount} 条记录。`,
+      confirmText: '清除',
       cancelText: '取消',
       tone: 'danger',
-      action: () => clearFailedTasks(),
+      action: () => clearFailedTasks(failedTaskIds),
     })
   }
 

@@ -31,6 +31,8 @@ export interface CallApiResult {
   revisedPrompts?: Array<string | undefined>
   /** API 是否使用流式响应 */
   streamed?: boolean
+  /** 并发多图请求中失败的单张请求 */
+  failedRequests?: Array<{ requestIndex: number; error: string }>
 }
 
 export function isHttpUrl(value: unknown): value is string {

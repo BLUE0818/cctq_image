@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { TaskRecord } from './types'
-import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
+import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 vi.mock('./lib/db', () => ({
   CURRENT_THUMBNAIL_VERSION: 1,
@@ -312,5 +312,36 @@ describe('failed task cleanup', () => {
     expect(state.tasks.map((item) => item.id)).toEqual(['done-task', 'running-task'])
     expect(state.selectedTaskIds).toEqual(['done-task'])
     expect(state.showToast).toHaveBeenCalledWith('已删除 2 条记录', 'success')
+  })
+
+  it('matches partial failures in failed filters and searches error text', () => {
+    const partial = task({
+      id: 'partial-task',
+      status: 'done',
+      outputImages: ['done-image-a', 'done-image-b'],
+      outputErrors: [{ requestIndex: 2, error: 'Failed to fetch' }],
+    })
+
+    expect(taskMatchesFilterStatus(partial, 'error')).toBe(true)
+    expect(taskMatchesFilterStatus(partial, 'done')).toBe(true)
+    expect(taskMatchesSearchQuery(partial, 'failed to fetch')).toBe(true)
+  })
+
+  it('clears partial failure markers without deleting successful outputs', async () => {
+    const partial = task({
+      id: 'partial-task',
+      status: 'done',
+      outputImages: ['done-image-a'],
+      outputErrors: [{ requestIndex: 1, error: 'Failed to fetch' }],
+    })
+    useStore.setState({ tasks: [partial], selectedTaskIds: ['partial-task'] })
+
+    await clearFailedTasks(['partial-task'])
+
+    const state = useStore.getState()
+    expect(state.tasks).toHaveLength(1)
+    expect(state.tasks[0]).toMatchObject({ id: 'partial-task', outputImages: ['done-image-a'], outputErrors: undefined })
+    expect(state.selectedTaskIds).toEqual([])
+    expect(state.showToast).toHaveBeenCalledWith('已清除 1 条部分失败记录', 'success')
   })
 })

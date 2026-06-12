@@ -161,6 +161,8 @@ export interface TaskRecord {
   maskImageId?: string | null
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
+  /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
+  outputErrors?: Array<{ requestIndex: number; error: string }>
   status: TaskStatus
   error: string | null
   createdAt: number

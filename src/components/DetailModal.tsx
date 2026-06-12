@@ -86,12 +86,38 @@ export default function DetailModal() {
     }
   }, [task])
 
-  const currentOutputImageId = task?.outputImages?.[imageIndex] || ''
-  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
   const maskTargetId = task?.maskTargetImageId || null
   const maskTargetSrc = maskTargetId ? imageSrcs[maskTargetId] || '' : ''
   const maskSrc = task?.maskImageId ? imageSrcs[task.maskImageId] || '' : ''
   const allInputImageIds = task?.inputImageIds ?? []
+  const outputSlots = useMemo(() => {
+    if (!task) return []
+    const outputErrors = task.outputErrors ?? []
+    if (outputErrors.length === 0) {
+      return task.outputImages.map((imageId, outputImageIndex) => ({
+        requestIndex: outputImageIndex,
+        outputImageIndex,
+        imageId,
+        error: '',
+      }))
+    }
+
+    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
+    const requestedCount = Math.max(task.params.n, task.outputImages.length + outputErrors.length)
+    let outputImageIndex = 0
+    return Array.from({ length: requestedCount }, (_, requestIndex) => {
+      const error = errorsByIndex.get(requestIndex)
+      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
+      const imageId = task.outputImages[outputImageIndex] ?? ''
+      const slot = { requestIndex, outputImageIndex, imageId, error: '' }
+      outputImageIndex += 1
+      return slot
+    })
+  }, [task])
+  const currentOutputSlot = outputSlots[imageIndex]
+  const currentOutputImageId = currentOutputSlot?.imageId || ''
+  const currentOutputError = currentOutputSlot?.error || ''
+  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
 
   useEffect(() => {
     if (!currentOutputImageId) {
@@ -158,7 +184,11 @@ export default function DetailModal() {
 
   if (!task) return null
 
-  const outputLen = task.outputImages?.length || 0
+  const outputLen = outputSlots.length
+  useEffect(() => {
+    if (outputLen > 0 && imageIndex >= outputLen) setImageIndex(outputLen - 1)
+  }, [imageIndex, outputLen])
+
   const currentImageRatio = currentOutputImageId ? imageRatios[currentOutputImageId] : ''
   const currentImageSize = currentOutputImageId ? imageSizes[currentOutputImageId] : ''
   const currentActualParams = currentOutputImageId ? task.actualParamsByImage?.[currentOutputImageId] : undefined
@@ -363,7 +393,7 @@ export default function DetailModal() {
                   setImageLabelLeft(Math.max(8, imageRect.left - panelRect.left))
                 }}
                 onClick={() =>
-                  setLightboxImageId(task.outputImages[imageIndex], task.outputImages)
+                  setLightboxImageId(currentOutputImageId, task.outputImages)
                 }
                 alt=""
               />
@@ -440,6 +470,47 @@ export default function DetailModal() {
                 </>
               )}
             </>
+          )}
+          {task.status === 'done' && outputLen > 0 && currentOutputError && (
+            <div className="w-full max-w-md px-4 text-center">
+              <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-sm font-medium text-red-500">第 {(currentOutputSlot?.requestIndex ?? imageIndex) + 1} 张生成失败</p>
+              <p
+                className="mt-2 overflow-hidden whitespace-pre-line text-sm leading-6 text-red-500 break-words"
+                style={{
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 8,
+                }}
+              >
+                {currentOutputError}
+              </p>
+              {outputLen > 1 && (
+                <>
+                  <button
+                    onClick={() => setImageIndex((imageIndex - 1 + outputLen) % outputLen)}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/30 text-white hover:bg-black/50 transition"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setImageIndex((imageIndex + 1) % outputLen)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/30 text-white hover:bg-black/50 transition"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                  <span className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full">
+                    {imageIndex + 1} / {outputLen}
+                  </span>
+                </>
+              )}
+            </div>
           )}
           {(task.status === 'running' || isFalReconnecting) && (
             <>

@@ -104,6 +104,10 @@ function createRequestHeaders(profile: ApiProfile): Record<string, string> {
   }
 }
 
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function isImagesStreamResponse(response: Response): boolean {
   return response.headers.get('Content-Type')?.toLowerCase().includes('text/event-stream') ?? false
 }
@@ -251,6 +255,9 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   const successfulResults = results
     .filter((r): r is PromiseFulfilledResult<CallApiResult> => r.status === 'fulfilled')
     .map((r) => r.value)
+  const failedRequests = results.flatMap((r, requestIndex) =>
+    r.status === 'rejected' ? [{ requestIndex, error: getErrorMessage(r.reason) }] : [],
+  )
 
   if (successfulResults.length === 0) {
     const firstError = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
@@ -270,7 +277,13 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     { n: images.length },
   )
 
-  return { images, actualParams, actualParamsList, revisedPrompts }
+  return {
+    images,
+    actualParams,
+    actualParamsList,
+    revisedPrompts,
+    ...(failedRequests.length ? { failedRequests } : {}),
+  }
 }
 
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {

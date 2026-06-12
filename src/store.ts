@@ -629,6 +629,25 @@ function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number) {
   openAIWatchdogTimers.set(taskId, timer)
 }
 
+export function taskHasOutputErrors(task: Pick<TaskRecord, 'outputErrors'>) {
+  return Boolean(task.outputErrors?.length)
+}
+
+export function taskMatchesFilterStatus(task: TaskRecord, filterStatus: AppState['filterStatus']) {
+  if (filterStatus === 'all') return true
+  if (filterStatus === 'error') return task.status === 'error' || taskHasOutputErrors(task)
+  return task.status === filterStatus
+}
+
+export function taskMatchesSearchQuery(task: TaskRecord, query: string) {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const prompt = (task.prompt || '').toLowerCase()
+  const paramStr = JSON.stringify(task.params).toLowerCase()
+  const errorStr = [task.error, ...(task.outputErrors ?? []).map((item) => item.error)].filter(Boolean).join('\n').toLowerCase()
+  return prompt.includes(q) || paramStr.includes(q) || errorStr.includes(q)
+}
+
 export function showCodexCliPrompt(force = false, reason = '接口返回的提示词已被改写') {
   const state = useStore.getState()
   const settings = state.settings
@@ -1089,6 +1108,7 @@ async function executeTask(taskId: string) {
     clearOpenAIWatchdogTimer(taskId)
     updateTaskInStore(taskId, {
       outputImages: outputIds,
+      outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
@@ -1099,7 +1119,11 @@ async function executeTask(taskId: string) {
       customRecoverable: false,
     })
 
-    useStore.getState().showToast(`生成完成，共 ${outputIds.length} 张图片`, 'success')
+    const failedCount = result.failedRequests?.length ?? 0
+    const completionMessage = failedCount > 0
+      ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
+      : `生成完成，共 ${outputIds.length} 张图片`
+    useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
     const currentMask = useStore.getState().maskDraft
     if (
       maskDataUrl &&
@@ -1332,13 +1356,29 @@ export async function removeMultipleTasks(taskIds: string[]) {
 }
 
 /** 删除所有失败任务 */
-export async function clearFailedTasks() {
-  const failedTaskIds = useStore.getState().tasks
+export async function clearFailedTasks(taskIds?: string[]) {
+  const targetTaskIds = taskIds ? new Set(taskIds) : null
+  const failedTasks = useStore.getState().tasks
+    .filter((task) => taskMatchesFilterStatus(task, 'error') && (!targetTaskIds || targetTaskIds.has(task.id)))
+  const failedTaskIds = failedTasks
     .filter((task) => task.status === 'error')
     .map((task) => task.id)
+  const partialFailedTaskIds = new Set(
+    failedTasks
+      .filter((task) => task.status !== 'error' && taskHasOutputErrors(task))
+      .map((task) => task.id),
+  )
 
-  if (!failedTaskIds.length) return
-  await removeMultipleTasks(failedTaskIds)
+  if (failedTaskIds.length) await removeMultipleTasks(failedTaskIds)
+  if (partialFailedTaskIds.size) {
+    const { tasks, setTasks, selectedTaskIds, setSelectedTaskIds, showToast } = useStore.getState()
+    const updated = tasks.map((task) => partialFailedTaskIds.has(task.id) ? { ...task, outputErrors: undefined } : task)
+    setTasks(updated)
+    const nextSelectedTaskIds = selectedTaskIds.filter((id) => !partialFailedTaskIds.has(id))
+    if (nextSelectedTaskIds.length !== selectedTaskIds.length) setSelectedTaskIds(nextSelectedTaskIds)
+    await Promise.all(updated.filter((task) => partialFailedTaskIds.has(task.id)).map((task) => putTask(task)))
+    showToast(`已清除 ${partialFailedTaskIds.size} 条部分失败记录`, 'success')
+  }
 }
 
 /** 删除单条任务 */

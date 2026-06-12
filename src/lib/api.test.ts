@@ -10,6 +10,34 @@ describe('callImageApi', () => {
     vi.useRealTimers()
   })
 
+  it('keeps successful Images API concurrent results when one request fails', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const callIndex = fetchMock.mock.calls.length
+      if (callIndex === 2) throw new TypeError('Failed to fetch')
+      return new Response(JSON.stringify({
+        data: [{ b64_json: `aW1hZ2Ut${callIndex}` }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 3 },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2Ut1',
+      'data:image/png;base64,aW1hZ2Ut3',
+    ])
+    expect(result.failedRequests).toEqual([{ requestIndex: 1, error: 'Failed to fetch' }])
+    expect(result.actualParams).toMatchObject({ n: 2 })
+  })
+
 
   it('does not synthesize actual quality in Codex CLI mode when the API omits it', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
