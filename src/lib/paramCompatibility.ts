@@ -21,6 +21,9 @@ export function normalizeParamsForSettings(
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
     n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
   }
+  if (nextParams.size === DEFAULT_PARAMS.size) {
+    nextParams.aspectRatio = DEFAULT_PARAMS.aspectRatio
+  }
 
   if (activeProfile.provider === 'openai' && activeProfile.codexCli) {
     nextParams.quality = DEFAULT_PARAMS.quality

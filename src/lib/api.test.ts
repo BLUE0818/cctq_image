@@ -199,6 +199,28 @@ describe('callImageApi', () => {
     expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('partial_images')
   })
 
+  it('sends auto size and appends the selected aspect ratio to the prompt', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: false },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, size: '1024x576', aspectRatio: '16:9' },
+      inputImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      prompt: 'prompt\n将宽高比设为 16:9',
+      size: 'auto',
+    })
+  })
+
   it('preserves the actual image mime when upstream returns non-png base64', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'UklGRiQAAABXRUJQVlA4IAAAAAA=' }],
@@ -311,6 +333,52 @@ describe('callImageApi', () => {
     expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('partial_images')
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
+    })
+  })
+
+  it('passes auto size and aspect-ratio prompt to custom provider mappings', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'ZmluYWw=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customProviders: [{
+          id: 'custom-sync',
+          name: 'Custom Sync',
+          template: 'http-image',
+          submit: {
+            path: 'images/generations',
+            method: 'POST',
+            contentType: 'json',
+            body: { prompt: '$prompt', size: '$params.size' },
+            result: { b64JsonPaths: ['data.*.b64_json'] },
+          },
+        }],
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-custom-sync',
+          provider: 'custom-sync',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+          model: 'model',
+          timeout: 60,
+        }],
+        activeProfileId: 'profile-custom-sync',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, size: '1536x1024', aspectRatio: '3:2' },
+      inputImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      prompt: 'prompt\n将宽高比设为 3:2',
+      size: 'auto',
     })
   })
 

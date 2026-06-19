@@ -19,6 +19,7 @@ import {
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
+const ASPECT_RATIO_PROMPT_PREFIX = '将宽高比设为'
 const IMAGE_RESPONSE_FORMAT = 'b64_json'
 
 function appendQuery(path: string, query?: Record<string, string>): string {
@@ -83,6 +84,28 @@ function createRequestHeaders(profile: ApiProfile): Record<string, string> {
   }
 }
 
+function normalizeAspectRatioForPrompt(value: string | null | undefined) {
+  if (!value) return ''
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*[:xX×]\s*(\d+(?:\.\d+)?)$/)
+  return match ? `${match[1]}:${match[2]}` : ''
+}
+
+function prepareRequestOptions(opts: CallApiOptions): CallApiOptions {
+  const aspectRatio = normalizeAspectRatioForPrompt(opts.params.aspectRatio)
+  const prompt = aspectRatio
+    ? `${opts.prompt.trimEnd()}\n${ASPECT_RATIO_PROMPT_PREFIX} ${aspectRatio}`
+    : opts.prompt
+
+  return {
+    ...opts,
+    prompt,
+    params: {
+      ...opts.params,
+      size: 'auto',
+    },
+  }
+}
+
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -134,11 +157,12 @@ async function parseResponseJson(response: Response): Promise<unknown> {
 }
 
 export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
+  const requestOpts = prepareRequestOptions(opts)
   if (customProvider) {
-    return callCustomHttpImageApi(opts, profile, customProvider)
+    return callCustomHttpImageApi(requestOpts, profile, customProvider)
   }
 
-  return callImagesApi(opts, profile)
+  return callImagesApi(requestOpts, profile)
 }
 
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
