@@ -18,14 +18,20 @@ export interface ModalAnnouncement {
 
 export const modalAnnouncements: ModalAnnouncement[] = [
   {
-    id: '2026-06-24-resolution-selection-restored',
-    title: '恢复具体分辨率选择',
-    message: '因 Codex 再次接受传参，已恢复具体分辨率选择',
+    id: '20260625-000948-4k-resolution-limit',
+    title: '4K 分辨率边长限制说明',
+    message: '经测试，目前边长约束为：若有一条边长 > 2160，则另一条边长必须 <= 2160，所以 4K 分辨率下 2:3 / 3:2 / 4:3 / 3:4 通常都会报错 size exceeds the maximum supported resolution，请使用“自定义宽高”，修改分辨率。\n\n因最近 Codex 修改频繁，故暂没有直接修改内置分辨率，请手动修改，谢谢理解。',
     confirmText: '我知道了',
   },
 ]
 
 export const timelineAnnouncements: TimelineAnnouncement[] = [
+  {
+    id: '20260625-000948-4k-resolution-limit',
+    message: '经测试，目前边长约束为：若有一条边长 > 2160，则另一条边长必须 <= 2160，所以 4K 分辨率下 2:3 / 3:2 / 4:3 / 3:4 通常都会报错 size exceeds the maximum supported resolution，请使用“自定义宽高”，修改分辨率。\n\n因最近 Codex 修改频繁，故暂没有直接修改内置分辨率，请手动修改，谢谢理解。',
+    meta: '2026-06-25',
+    tone: 'warning',
+  },
   {
     id: '2026-06-24-resolution-selection-restored',
     message: '因 Codex 再次接受传参，已恢复具体分辨率选择',
