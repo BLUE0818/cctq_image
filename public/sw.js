@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cctq-image-v0.3.2'
+const CACHE_NAME = 'cctq-image-v0.6.10'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
