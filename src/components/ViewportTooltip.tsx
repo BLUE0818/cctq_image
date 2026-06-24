@@ -7,6 +7,14 @@ interface ViewportTooltipProps {
   className?: string
 }
 
+function isAnchorExposed(anchor: HTMLElement, rect: DOMRect) {
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  if (x < 0 || x > window.innerWidth || y < 0 || y > window.innerHeight) return false
+  const el = document.elementFromPoint(x, y)
+  return Boolean(el && anchor.contains(el))
+}
+
 export default function ViewportTooltip({ visible, children, className = '' }: ViewportTooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -32,6 +40,10 @@ export default function ViewportTooltip({ visible, children, className = '' }: V
       const gap = 8
       const anchorRect = anchor.getBoundingClientRect()
       if (!anchor.getClientRects().length || (anchorRect.width === 0 && anchorRect.height === 0)) {
+        setPosition(null)
+        return
+      }
+      if (!isAnchorExposed(anchor, anchorRect)) {
         setPosition(null)
         return
       }
