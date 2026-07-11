@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { useStore, addImageFromUrl, ensureImageCached } from '../store'
-import { copyBlobToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
+import { canCopyImageToClipboard, copyBlobToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageIds, formatExportFileTime } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
 
 export default function ImageContextMenu() {
-  const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; x: number; y: number } | null>(null)
+  const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; canCopyImage: boolean; x: number; y: number } | null>(null)
   const showToast = useStore((s) => s.showToast)
   const inputImages = useStore((s) => s.inputImages)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
@@ -29,10 +29,14 @@ export default function ImageContextMenu() {
         const isTouch = window.matchMedia('(pointer: coarse)').matches
         if (isIOS && isTouch) return
 
+        const canCopyImage = canCopyImageToClipboard()
+        if (!canCopyImage && imgTarget.classList.contains('object-contain')) return
+
         e.preventDefault()
         setMenuInfo({
           src: imgTarget.src,
           imageId: imgTarget.dataset.imageId,
+          canCopyImage,
           x: e.clientX,
           y: e.clientY,
         })
@@ -153,7 +157,7 @@ export default function ImageContextMenu() {
   let left = menuInfo.x
   let top = menuInfo.y
   const MENU_WIDTH = 120
-  const MENU_HEIGHT = 128 // 三个按钮高度加 padding
+  const MENU_HEIGHT = (menuInfo.canCopyImage ? 3 : 2) * 32 + 32
 
   if (left + MENU_WIDTH > window.innerWidth) {
     left -= MENU_WIDTH
@@ -169,13 +173,15 @@ export default function ImageContextMenu() {
       style={{ left, top }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <button
-        onClick={handleCopy}
-        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
-      >
-        <CopyIcon className="w-4 h-4 flex-shrink-0" />
-        复制
-      </button>
+      {menuInfo.canCopyImage && (
+        <button
+          onClick={handleCopy}
+          className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+        >
+          <CopyIcon className="w-4 h-4 flex-shrink-0" />
+          复制
+        </button>
+      )}
       <button
         onClick={handleDownload}
         className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
