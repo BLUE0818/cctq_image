@@ -15,8 +15,18 @@ export async function copyTextToClipboard(text: string) {
   throw asyncClipboardError ?? new Error('Clipboard API is not available')
 }
 
+export function canCopyImageToClipboard() {
+  return (
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof navigator !== 'undefined' &&
+    Boolean(navigator.clipboard?.write) &&
+    typeof ClipboardItem !== 'undefined'
+  )
+}
+
 export async function copyBlobToClipboard(blob: Blob) {
-  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+  if (!canCopyImageToClipboard()) {
     throw new Error('Clipboard image API is not available')
   }
 
