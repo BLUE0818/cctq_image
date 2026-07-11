@@ -18,14 +18,20 @@ export interface ModalAnnouncement {
 
 export const modalAnnouncements: ModalAnnouncement[] = [
   {
-    id: '20260628-150855-sizes-restored',
-    title: '已恢复',
-    message: '所有尺寸均已恢复正常，4K 图高峰存在 CF120S 超时问题，尝试更换 US 节点或重试，该问题暂无法解决，无需反馈',
+    id: '20260711-213542-size-guidance',
+    title: '尺寸相关说明',
+    message: '推荐使用自动（Auto）进行生成，如需控制比例，可以在提示词最后加入：“将宽高比设为 x:x”\n\n因Codex限制，我们无法保证每一次的尺寸都和选择相符，如：选择2048*2048，最终生成可能为1024*1024或其他尺寸，我们无法控制。遇到此情况可尝试重新生成或选择 自动 并用提示词控制比例\n\n该问题为Codex本身限制，并非出于我们，敬请谅解，也无需反馈',
     confirmText: '我知道了',
   },
 ]
 
 export const timelineAnnouncements: TimelineAnnouncement[] = [
+  {
+    id: '20260711-213542-size-guidance',
+    message: '推荐使用自动（Auto）进行生成，如需控制比例，可以在提示词最后加入：“将宽高比设为 x:x”\n\n因Codex限制，我们无法保证每一次的尺寸都和选择相符，如：选择2048*2048，最终生成可能为1024*1024或其他尺寸，我们无法控制。遇到此情况可尝试重新生成或选择 自动 并用提示词控制比例\n\n该问题为Codex本身限制，并非出于我们，敬请谅解，也无需反馈',
+    meta: '2026-07-11',
+    tone: 'warning',
+  },
   {
     id: '20260628-150855-sizes-restored',
     message: '所有尺寸均已恢复正常，4K 图高峰存在 CF120S 超时问题，尝试更换 US 节点或重试，该问题暂无法解决，无需反馈',
