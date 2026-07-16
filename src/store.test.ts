@@ -1,8 +1,10 @@
+import { strToU8, zipSync } from 'fflate'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_PARAMS } from './types'
+import { DEFAULT_PARAMS, type ExportData } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
+import * as db from './lib/db'
 import type { TaskRecord } from './types'
-import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, importData, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 vi.mock('./lib/db', () => ({
   CURRENT_THUMBNAIL_VERSION: 1,
@@ -343,5 +345,97 @@ describe('failed task cleanup', () => {
     expect(state.tasks[0]).toMatchObject({ id: 'partial-task', outputImages: ['done-image-a'], outputErrors: undefined })
     expect(state.selectedTaskIds).toEqual([])
     expect(state.showToast).toHaveBeenCalledWith('已清除 1 条部分失败记录', 'success')
+  })
+})
+
+function importFile(manifest: ExportData, files: Record<string, Uint8Array> = {}) {
+  const bytes = zipSync({
+    'manifest.json': strToU8(JSON.stringify(manifest)),
+    ...files,
+  })
+  const buffer = bytes.slice().buffer as ArrayBuffer
+  return {
+    name: 'backup.zip',
+    size: bytes.byteLength,
+    arrayBuffer: vi.fn(async () => buffer),
+  } as unknown as File
+}
+
+describe('multipart data import', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    useStore.setState({
+      tasks: [],
+      showToast: vi.fn(),
+    })
+  })
+
+  it('imports a complete multipart backup selected in any order', async () => {
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [task({ id: 'multipart-task-a' })],
+      imageFiles: {},
+    })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      tasks: [task({ id: 'multipart-task-b' })],
+      imageFiles: {},
+    })
+
+    await expect(importData([part2, part1], { importConfig: false, importTasks: true })).resolves.toBe(true)
+    expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.id)).toEqual(['multipart-task-a', 'multipart-task-b'])
+  })
+
+  it('rejects an incomplete multipart backup before writing data', async () => {
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [task({ id: 'multipart-task-a' })],
+      imageFiles: {},
+    })
+
+    await expect(importData([part1], { importConfig: false, importTasks: true })).resolves.toBe(false)
+    expect(db.putTask).not.toHaveBeenCalled()
+    expect(db.putImage).not.toHaveBeenCalled()
+  })
+
+  it('validates every selected part before writing earlier parts', async () => {
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [task({ id: 'multipart-task-a' })],
+      imageFiles: { 'image-a': { path: 'images/image-a.png' } },
+    }, { 'images/image-a.png': new Uint8Array([1, 2]) })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      tasks: [task({ id: 'multipart-task-b' })],
+      imageFiles: { missing: { path: 'images/missing.png' } },
+    })
+
+    await expect(importData([part1, part2], { importConfig: false, importTasks: true })).resolves.toBe(false)
+    expect(db.putTask).not.toHaveBeenCalled()
+    expect(db.putImage).not.toHaveBeenCalled()
+  })
+
+  it('blocks task imports while supported work is active', async () => {
+    const file = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      tasks: [task({ id: 'imported-task' })],
+    })
+    useStore.setState({ tasks: [task({ status: 'running' })] })
+
+    await expect(importData(file, { importConfig: false, importTasks: true })).resolves.toBe(false)
+    expect(file.arrayBuffer).not.toHaveBeenCalled()
+    expect(db.putTask).not.toHaveBeenCalled()
   })
 })
