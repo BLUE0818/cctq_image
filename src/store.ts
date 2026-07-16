@@ -7,7 +7,7 @@ import type {
   InputImage,
   MaskDraft,
   TaskRecord,
-  ExportData,
+  StoredImageThumbnail,
 } from './types'
 import { DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
@@ -35,7 +35,18 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
-import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
+import { hasActiveDataOperations } from './lib/dataOperations'
+import { formatExportFileTime } from './lib/downloadImages'
+import {
+  buildExportZip,
+  createExportBlob,
+  getExportImageEstimatedBytes,
+  getExportZipPlan,
+  MAX_EXPORT_ZIP_BYTES,
+  readExportZip,
+  readExportZipFileAsDataUrl,
+  readExportZipManifest,
+} from './lib/exportZip'
 
 // ===== Image cache =====
 // 内存缓存，id → dataUrl。只保留少量最近使用图片，避免大量 4K data URL 常驻内存。
@@ -1450,27 +1461,6 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   showToast('所选数据已清空', 'success')
 }
 
-/** 从 dataUrl 解析出 MIME 扩展名和二进制数据 */
-function dataUrlToBytes(dataUrl: string): { ext: string; bytes: Uint8Array } {
-  const match = dataUrl.match(/^data:image\/(\w+);base64,/)
-  const ext = match?.[1] ?? 'png'
-  const b64 = dataUrl.replace(/^data:[^;]+;base64,/, '')
-  const binary = atob(b64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return { ext, bytes }
-}
-
-/** 将二进制数据还原为 dataUrl */
-function bytesToDataUrl(bytes: Uint8Array, filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? 'png'
-  const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
-  const mime = mimeMap[ext] ?? 'image/png'
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-  return `data:${mime};base64,${btoa(binary)}`
-}
-
 async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<ReturnType<typeof getCustomQueuedImageResult>>) {
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
@@ -1525,11 +1515,6 @@ async function recoverCustomTask(taskId: string) {
   }
 }
 
-function formatExportFileTime(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
-}
-
 /** 导出选项 */
 export interface ExportOptions {
   exportConfig?: boolean
@@ -1539,98 +1524,78 @@ export interface ExportOptions {
 /** 导出数据为 ZIP */
 export async function exportData(options: ExportOptions = { exportConfig: true, exportTasks: true }) {
   try {
+    const state = useStore.getState()
+    if (options.exportTasks && hasActiveDataOperations(state.tasks)) {
+      throw new Error('当前有任务正在进行，请完成或停止后再导出。')
+    }
     const tasks = options.exportTasks ? await getAllTasks() : []
     const images = options.exportTasks ? await getAllImages() : []
-    const { settings } = useStore.getState()
+    const { settings } = state
     const exportedAt = Date.now()
-    const imageCreatedAtFallback = new Map<string, number>()
-
-    if (options.exportTasks) {
-      for (const task of tasks) {
-        for (const id of [
-          ...(task.inputImageIds || []),
-          ...(task.maskImageId ? [task.maskImageId] : []),
-          ...(task.outputImages || []),
-        ]) {
-          const prev = imageCreatedAtFallback.get(id)
-          if (prev == null || task.createdAt < prev) {
-            imageCreatedAtFallback.set(id, task.createdAt)
-          }
-        }
+    const thumbnailsByImageId = new Map<string, StoredImageThumbnail>()
+    const imageSizes = []
+    for (const image of images) {
+      const thumbnail = await getImageThumbnail(image.id)
+      if (thumbnail?.thumbnailDataUrl) {
+        thumbnailsByImageId.set(image.id, thumbnail)
+        cacheThumbnail(image.id, {
+          dataUrl: thumbnail.thumbnailDataUrl,
+          width: thumbnail.width,
+          height: thumbnail.height,
+          thumbnailVersion: thumbnail.thumbnailVersion,
+        })
       }
+      imageSizes.push({ id: image.id, bytes: getExportImageEstimatedBytes(image, thumbnail) })
     }
 
-    const imageFiles: ExportData['imageFiles'] = {}
-    const thumbnailFiles: NonNullable<ExportData['thumbnailFiles']> = {}
-    const zipFiles: Record<string, Uint8Array | [Uint8Array, { mtime: Date }]> = {}
+    const params = { options, exportedAt, settings, tasks, imageTasks: tasks }
+    const plan = getExportZipPlan(params, imageSizes)
+    const imagesById = new Map(images.map((image) => [image.id, image]))
+    const backupId = String(exportedAt)
 
-    if (options.exportTasks) {
-      for (const img of images) {
-        const { ext, bytes } = dataUrlToBytes(img.dataUrl)
-        const path = `images/${img.id}.${ext}`
-        const createdAt = img.createdAt ?? imageCreatedAtFallback.get(img.id) ?? exportedAt
-        imageFiles[img.id] = {
-          path,
-          createdAt,
-          source: img.source,
-          width: img.width,
-          height: img.height,
-        }
-        zipFiles[path] = [bytes, { mtime: new Date(createdAt) }]
-
-        const thumbnail = await getImageThumbnail(img.id)
-        if (thumbnail?.thumbnailDataUrl) {
-          const { ext: thumbnailExt, bytes: thumbnailBytes } = dataUrlToBytes(thumbnail.thumbnailDataUrl)
-          const thumbnailPath = `thumbnails/${img.id}.${thumbnailExt}`
-          imageFiles[img.id].width = imageFiles[img.id].width ?? thumbnail.width
-          imageFiles[img.id].height = imageFiles[img.id].height ?? thumbnail.height
-          thumbnailFiles[img.id] = {
-            path: thumbnailPath,
-            width: thumbnail.width,
-            height: thumbnail.height,
-            thumbnailVersion: thumbnail.thumbnailVersion,
-          }
-          zipFiles[thumbnailPath] = [thumbnailBytes, { mtime: new Date(createdAt) }]
-          cacheThumbnail(img.id, {
-            dataUrl: thumbnail.thumbnailDataUrl,
-            width: thumbnail.width,
-            height: thumbnail.height,
-            thumbnailVersion: thumbnail.thumbnailVersion,
-          })
-        }
+    for (let index = 0; index < plan.length; index++) {
+      const part = plan[index]
+      const partImages = part.imageIds.flatMap((id) => {
+        const image = imagesById.get(id)
+        return image ? [image] : []
+      })
+      const partThumbnails = new Map<string, StoredImageThumbnail>()
+      for (const id of part.imageIds) {
+        const thumbnail = thumbnailsByImageId.get(id)
+        if (thumbnail) partThumbnails.set(id, thumbnail)
       }
+
+      const partNumber = index + 1
+      const result = await buildExportZip({
+        ...params,
+        tasks: part.tasks,
+        images: partImages,
+        thumbnailsByImageId: partThumbnails,
+        includeManifestData: part.includeBaseData,
+        backupPart: plan.length > 1 ? { id: backupId, index: partNumber, total: plan.length } : undefined,
+      })
+      const blob = createExportBlob(result.bytes)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      const suffix = plan.length > 1
+        ? `_${String(plan.length).padStart(2, '0')}parts_part${String(partNumber).padStart(2, '0')}`
+        : ''
+      link.href = url
+      link.download = `cctq-image-${formatExportFileTime(new Date(exportedAt))}${suffix}.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      if (partNumber < plan.length) await new Promise((resolve) => window.setTimeout(resolve, 150))
     }
-
-    const manifest: ExportData = {
-      version: 3,
-      exportedAt: new Date(exportedAt).toISOString(),
-    }
-
-    if (options.exportConfig) manifest.settings = settings
-    if (options.exportTasks) {
-      manifest.tasks = tasks
-      manifest.imageFiles = imageFiles
-      manifest.thumbnailFiles = thumbnailFiles
-    }
-
-    zipFiles['manifest.json'] = [strToU8(JSON.stringify(manifest, null, 2)), { mtime: new Date(exportedAt) }]
-
-    const zipped = zipSync(zipFiles, { level: 6 })
-    const blob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `cctq-image-${formatExportFileTime(new Date(exportedAt))}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
-    useStore.getState().showToast('数据已导出', 'success')
+    useStore.getState().showToast(
+      plan.length > 1 ? `已请求下载 ${plan.length} 个 ZIP，请确认浏览器已允许多文件下载` : '数据已导出',
+      'success',
+    )
   } catch (e) {
-    useStore
-      .getState()
-      .showToast(
-        `导出失败：${e instanceof Error ? e.message : String(e)}`,
-        'error',
-      )
+    console.error('exportData failed', e)
+    const detail = e instanceof Error ? e.message.trim() : String(e).trim()
+    useStore.getState().showToast(detail ? `导出失败，${detail}` : '导出失败，未知错误', 'error')
   }
 }
 
@@ -1641,55 +1606,95 @@ export interface ImportOptions {
 }
 
 /** 导入 ZIP 数据 */
-export async function importData(file: File, options: ImportOptions = { importConfig: true, importTasks: true }): Promise<boolean> {
+export async function importData(input: File | File[], options: ImportOptions = { importConfig: true, importTasks: true }): Promise<boolean> {
   try {
-    const buffer = await file.arrayBuffer()
-    const unzipped = unzipSync(new Uint8Array(buffer))
+    const state = useStore.getState()
+    if (options.importTasks && hasActiveDataOperations(state.tasks)) {
+      throw new Error('当前有任务正在进行，请完成或停止后再导入。')
+    }
+    const files = Array.isArray(input) ? input : [input]
+    if (!files.length) throw new Error('没有选择备份文件。')
+    if (files.some((file) => file.size >= MAX_EXPORT_ZIP_BYTES)) {
+      throw new Error('单个 ZIP 不能达到或超过 2 GB，请选择分片备份。')
+    }
 
-    const manifestBytes = unzipped['manifest.json']
-    if (!manifestBytes) throw new Error('ZIP 中缺少 manifest.json')
+    const selected: Array<{ file: File; manifest: Awaited<ReturnType<typeof readExportZipManifest>> }> = []
+    for (const file of files) {
+      const manifest = await readExportZipManifest(new Uint8Array(await file.arrayBuffer()), options.importTasks)
+      selected.push({ file, manifest })
+    }
 
-    const data: ExportData = JSON.parse(strFromU8(manifestBytes))
+    const multipart = selected.some((part) => part.manifest.backupPart != null)
+    if (multipart) {
+      if (selected.some((part) => !part.manifest.backupPart)) {
+        throw new Error('不能混合选择分片备份和普通备份。')
+      }
+      const first = selected[0].manifest.backupPart!
+      const indexes = new Set(selected.map((part) => part.manifest.backupPart!.index))
+      const validSet = selected.every((part) => {
+        const backupPart = part.manifest.backupPart!
+        return backupPart.id === first.id
+          && backupPart.total === first.total
+          && backupPart.index >= 1
+          && backupPart.index <= first.total
+      })
+      if (!validSet || indexes.size !== selected.length) {
+        throw new Error('所选分片不属于同一批备份或包含重复分片。')
+      }
+      if (options.importTasks && (selected.length !== first.total || indexes.size !== first.total)) {
+        throw new Error(`分片备份不完整，请一次选择同一备份的全部 ${first.total} 个 ZIP。`)
+      }
+      selected.sort((left, right) => left.manifest.backupPart!.index - right.manifest.backupPart!.index)
+    } else if (selected.length > 1) {
+      throw new Error('多个普通备份不能同时导入，请每次选择一个 ZIP。')
+    }
+
+    const data = selected.find((part) => part.manifest.settings)?.manifest ?? selected[0].manifest
+    if (options.importConfig && !options.importTasks && !data.settings) {
+      throw new Error('所选分片不包含配置数据。')
+    }
+    const importedTasks = selected.flatMap((part) => part.manifest.tasks ?? [])
+    const hasTaskData = selected.some((part) => part.manifest.tasks != null || part.manifest.imageFiles != null)
 
     const importedImageIds: string[] = []
-    if (options.importTasks && data.tasks && data.imageFiles) {
-      // 还原图片
-      for (const [id, info] of Object.entries(data.imageFiles)) {
-        const bytes = unzipped[info.path]
-        if (!bytes) continue
-        const dataUrl = bytesToDataUrl(bytes, info.path)
-        await putImage({
-          id,
-          dataUrl,
-          createdAt: info.createdAt,
-          source: info.source,
-          width: info.width,
-          height: info.height,
-        })
-        cacheImage(id, dataUrl)
-        importedImageIds.push(id)
+    if (options.importTasks && hasTaskData) {
+      for (const part of selected) {
+        const { manifest, files: zipFiles } = await readExportZip(new Uint8Array(await part.file.arrayBuffer()))
+        for (const [id, info] of Object.entries(manifest.imageFiles ?? {})) {
+          const dataUrl = readExportZipFileAsDataUrl(zipFiles, info.path)
+          if (!dataUrl) continue
+          await putImage({
+            id,
+            dataUrl,
+            createdAt: info.createdAt,
+            source: info.source,
+            width: info.width,
+            height: info.height,
+          })
+          cacheImage(id, dataUrl)
+          importedImageIds.push(id)
+        }
+
+        for (const [id, info] of Object.entries(manifest.thumbnailFiles ?? {})) {
+          const thumbnailDataUrl = readExportZipFileAsDataUrl(zipFiles, info.path)
+          if (!thumbnailDataUrl) continue
+          await putImageThumbnail({
+            id,
+            thumbnailDataUrl,
+            width: info.width,
+            height: info.height,
+            thumbnailVersion: info.thumbnailVersion,
+          })
+          cacheThumbnail(id, {
+            dataUrl: thumbnailDataUrl,
+            width: info.width,
+            height: info.height,
+            thumbnailVersion: info.thumbnailVersion,
+          })
+        }
       }
 
-      for (const [id, info] of Object.entries(data.thumbnailFiles ?? {})) {
-        const bytes = unzipped[info.path]
-        if (!bytes) continue
-        const thumbnailDataUrl = bytesToDataUrl(bytes, info.path)
-        await putImageThumbnail({
-          id,
-          thumbnailDataUrl,
-          width: info.width,
-          height: info.height,
-          thumbnailVersion: info.thumbnailVersion,
-        })
-        cacheThumbnail(id, {
-          dataUrl: thumbnailDataUrl,
-          width: info.width,
-          height: info.height,
-          thumbnailVersion: info.thumbnailVersion,
-        })
-      }
-
-      for (const task of data.tasks) {
+      for (const task of importedTasks) {
         await putTask(task)
       }
 
@@ -1704,8 +1709,8 @@ export async function importData(file: File, options: ImportOptions = { importCo
     }
 
     let msg = '数据已成功导入'
-    if (options.importTasks && data.tasks) {
-      msg = `已导入 ${data.tasks.length} 条记录`
+    if (options.importTasks && hasTaskData) {
+      msg = `已导入 ${importedTasks.length} 条记录`
     } else if (options.importConfig && data.settings) {
       msg = '配置已成功导入'
     }
@@ -1713,12 +1718,9 @@ export async function importData(file: File, options: ImportOptions = { importCo
     useStore.getState().showToast(msg, 'success')
     return true
   } catch (e) {
-    useStore
-      .getState()
-      .showToast(
-        `导入失败：${e instanceof Error ? e.message : String(e)}`,
-        'error',
-      )
+    console.error('importData failed', e)
+    const detail = e instanceof Error ? e.message.trim() : String(e).trim()
+    useStore.getState().showToast(detail ? `导入失败，${detail}` : '导入失败，未知错误', 'error')
     return false
   }
 }
