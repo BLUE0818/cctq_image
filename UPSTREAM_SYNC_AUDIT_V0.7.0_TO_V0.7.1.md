@@ -53,10 +53,10 @@
 | 36 | [`9c0466a`](https://github.com/CookSleep/gpt_image_playground/commit/9c0466a) | 2026-07-15 | 按规则排除 | 删除 Agent 输出透传逻辑。 | 已审核：按建议排除 |
 | 37 | [`6d5cd2d`](https://github.com/CookSleep/gpt_image_playground/commit/6d5cd2d) | 2026-07-15 | 按规则排除 | 提取 Agent Responses 输出和运行状态模块及测试。 | 已审核：按建议排除 |
 | 38 | [`db550ad`](https://github.com/CookSleep/gpt_image_playground/commit/db550ad) | 2026-07-15 | 按规则排除 | 协调 Agent 助手消息删除与关联任务清理。 | 已审核：按建议排除 |
-| 39 | [`0ac0f21`](https://github.com/CookSleep/gpt_image_playground/commit/0ac0f21) | 2026-07-15 | 部分可审核 | 提取画廊与 Agent 输入草稿状态。当前项目只保留单一画廊输入，不能照搬；可参考边界提取本地提示词、参考图和遮罩草稿逻辑。 |  |
+| 39 | [`0ac0f21`](https://github.com/CookSleep/gpt_image_playground/commit/0ac0f21) | 2026-07-15 | 部分可审核 | 提取画廊与 Agent 输入草稿状态。当前项目只保留单一画廊输入，不能照搬；可参考边界提取本地提示词、参考图和遮罩草稿逻辑。 | 已合入本地精简版：新增 `inputDraftState.ts`，提取遮罩主图置首、参考图替换/移除/整体设置与拖动规则；保持现有单画廊输入及 `@图N` 语义，不引入 Agent 草稿。新增 4 项测试。 |
 | 40 | [`26cd532`](https://github.com/CookSleep/gpt_image_playground/commit/26cd532) | 2026-07-15 | 按规则排除 | 提取上游收藏夹状态、默认收藏夹迁移及相关组件逻辑；当前项目已删除此功能。 | 已审核：按建议排除 |
 | 41 | [`0b2fb2a`](https://github.com/CookSleep/gpt_image_playground/commit/0b2fb2a) | 2026-07-15 | 按规则排除 | 提取 Agent 请求输入构建器及测试。 | 已审核：按建议排除 |
-| 42 | [`15a2904`](https://github.com/CookSleep/gpt_image_playground/commit/15a2904) | 2026-07-15 | 谨慎审核 | 提取持久化状态编码、迁移与恢复逻辑；上游模块依赖 Agent、收藏夹和输入草稿。应只参考设计，编写本地精简版并保持 `cctq-image` 存储键和旧数据兼容。 |  |
+| 42 | [`15a2904`](https://github.com/CookSleep/gpt_image_playground/commit/15a2904) | 2026-07-15 | 谨慎审核 | 提取持久化状态编码、迁移与恢复逻辑；上游模块依赖 Agent、收藏夹和输入草稿。应只参考设计，编写本地精简版并保持 `cctq-image` 存储键和旧数据兼容。 | 已合入本地精简版：新增 `persistedState.ts`，提取编码与恢复；保持 `cctq-image` 键和旧数据兼容，参考图仅持久化 ID，畸形字段按白名单归一化且不能覆盖 Store action。新增 4 项测试，全量 129 项及构建通过。 |
 | 43 | [`80d3d2d`](https://github.com/CookSleep/gpt_image_playground/commit/80d3d2d) | 2026-07-15 | 部分可审核 | 提取任务完成、失败、中断、实际参数与提示词映射等状态转换。适合本地重构，但需保留 OpenAI 兼容及自定义服务商逻辑并去除 fal/Agent 分支。 | 已合入：新增本地精简版 `taskState.ts`，提取生命周期 patch、中断恢复、实际参数及提示词映射；保留自定义异步恢复副作用在 `store.ts`。新增 3 项测试，全量 104 项测试及构建通过。 |
 | 44 | [`f1fd1ba`](https://github.com/CookSleep/gpt_image_playground/commit/f1fd1ba) | 2026-07-15 | 按规则排除 | 修复 Agent 工作区参考图提示显示。 | 已审核：按建议排除 |
 | 45 | [`db5d244`](https://github.com/CookSleep/gpt_image_playground/commit/db5d244) | 2026-07-15 | 按规则排除 | 将 Agent 参考图提示绑定到参考图区域。 | 已审核：按建议排除 |

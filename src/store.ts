@@ -12,6 +12,8 @@ import type {
 import { DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { replaceImageMentionsForApi } from './lib/promptImageMentions'
+import { moveDraftImage, orderImagesWithMaskFirst, removeDraftImage, replaceDraftImage, setDraftImages } from './lib/inputDraftState'
+import { encodePersistedState, mergePersistedState } from './lib/persistedState'
 import {
   getAllTasks,
   putTask,
@@ -84,43 +86,8 @@ function createOpenAITimeoutError(timeoutSeconds: number) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
 }
 
-function orderImagesWithMaskFirst(images: InputImage[], maskTargetImageId: string | null | undefined) {
-  if (!maskTargetImageId) return images
-  const maskIdx = images.findIndex((img) => img.id === maskTargetImageId)
-  if (maskIdx <= 0) return images
-  const next = [...images]
-  const [maskImage] = next.splice(maskIdx, 1)
-  next.unshift(maskImage)
-  return next
-}
-
 export function getPersistedState(state: AppState) {
-  const settings = normalizeSettings(state.settings)
-  return {
-    settings,
-    params: state.params,
-    ...(settings.persistInputOnRestart
-      ? {
-          prompt: state.prompt,
-          inputImages: state.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
-        }
-      : {}),
-    dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
-  }
-}
-
-function mergePersistedState(persistedState: unknown, currentState: AppState): AppState {
-  if (!persistedState || typeof persistedState !== 'object') return currentState
-
-  const persisted = persistedState as Partial<AppState>
-  const settings = normalizeSettings(persisted.settings ?? currentState.settings)
-  return {
-    ...currentState,
-    ...persisted,
-    settings,
-    prompt: settings.persistInputOnRestart && typeof persisted.prompt === 'string' ? persisted.prompt : '',
-    inputImages: settings.persistInputOnRestart && Array.isArray(persisted.inputImages) ? persisted.inputImages : [],
-  }
+  return encodePersistedState(state)
 }
 
 // ===== Store 类型 =====
@@ -262,53 +229,21 @@ export const useStore = create<AppState>()(
         }),
       replaceInputImage: (idx, img) =>
         set((s) => {
-          if (idx < 0 || idx >= s.inputImages.length) return s
-          if (s.inputImages.some((item, itemIdx) => itemIdx !== idx && item.id === img.id)) return s
-          const replaced = s.inputImages[idx]
-          const inputImages = s.inputImages.map((item, itemIdx) => itemIdx === idx ? img : item)
-          const shouldClearMask = replaced.id === s.maskDraft?.targetImageId
-          return {
-            inputImages,
-            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
-          }
+          return replaceDraftImage(s, idx, img) ?? s
         }),
       removeInputImage: (idx) =>
-        set((s) => {
-          const removed = s.inputImages[idx]
-          const shouldClearMask = removed?.id === s.maskDraft?.targetImageId
-          return {
-            inputImages: s.inputImages.filter((_, i) => i !== idx),
-            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
-          }
-        }),
+        set((s) => removeDraftImage(s, idx)),
       clearInputImages: () =>
         set((s) => {
           for (const img of s.inputImages) deleteCachedImage(img.id)
           return { inputImages: [], maskDraft: null, maskEditorImageId: null }
         }),
       setInputImages: (imgs) =>
-        set((s) => {
-          const inputImages = orderImagesWithMaskFirst(imgs, s.maskDraft?.targetImageId)
-          const shouldClearMask =
-            Boolean(s.maskDraft) && !inputImages.some((img) => img.id === s.maskDraft?.targetImageId)
-          return {
-            inputImages,
-            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
-          }
-        }),
+        set((s) => setDraftImages(s, imgs)),
       moveInputImage: (fromIdx, toIdx) =>
         set((s) => {
-          const images = [...s.inputImages]
-          if (fromIdx < 0 || fromIdx >= images.length) return s
-          const maskTargetImageId = s.maskDraft?.targetImageId
-          if (maskTargetImageId && images[fromIdx]?.id === maskTargetImageId) return s
-          const minTargetIdx = maskTargetImageId && images.some((img) => img.id === maskTargetImageId) ? 1 : 0
-          const targetIdx = Math.max(minTargetIdx, Math.min(images.length, toIdx))
-          const insertIdx = fromIdx < targetIdx ? targetIdx - 1 : targetIdx
-          if (insertIdx === fromIdx) return s
-          const [moved] = images.splice(fromIdx, 1)
-          images.splice(insertIdx, 0, moved)
-          return { inputImages: images }
+          const inputImages = moveDraftImage(s, fromIdx, toIdx)
+          return inputImages ? { inputImages } : s
         }),
       maskDraft: null,
       setMaskDraft: (maskDraft) =>
