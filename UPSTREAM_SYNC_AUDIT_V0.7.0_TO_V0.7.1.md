@@ -19,7 +19,7 @@
 | 2 | [`dfecfa5`](https://github.com/CookSleep/gpt_image_playground/commit/dfecfa5) | 2026-07-14 | 部分可审核 | 提取通用 Server-Sent Events 解析器，并让 Agent API 与 Images API 共享。当前项目只应移植 Images API 可复用部分及对应测试。 |  |
 | 3 | [`5a3077e`](https://github.com/CookSleep/gpt_image_playground/commit/5a3077e) | 2026-07-14 | 谨慎审核 | 将 `contentEditable` 的光标、选区、提及标签和纯文本转换逻辑从 `InputBar` 提取为独立适配器。当前实现比上游精简，应先等价提取本地逻辑，再按需吸收增强。 |  |
 | 4 | [`e9c5a0b`](https://github.com/CookSleep/gpt_image_playground/commit/e9c5a0b) | 2026-07-14 | 可审核 | 将原图 LRU、缩略图缓存、后台补全、并发控制和订阅通知从 `store.ts` 提取为 `imageCache.ts`。本地存在同源实现，适合行为不变地迁移。 | 已合入：等价提取本地缓存逻辑至 `src/lib/imageCache.ts`，组件改为直接依赖新模块，保留 `store.ts` 兼容导出；新增 5 项缓存测试，全量 101 项测试及构建通过。 |
-| 5 | [`74d9167`](https://github.com/CookSleep/gpt_image_playground/commit/74d9167) | 2026-07-14 | 部分可审核 | 拆分设置弹窗，将自定义服务商、配置导入 URL、ZIP 下载途径等独立为子组件；Agent 设置及当前项目已删除的通用设置页结构不得恢复。 |  |
+| 5 | [`74d9167`](https://github.com/CookSleep/gpt_image_playground/commit/74d9167) | 2026-07-14 | 部分可审核 | 拆分设置弹窗，将自定义服务商、配置导入 URL、ZIP 下载途径等独立为子组件；Agent 设置及当前项目已删除的通用设置页结构不得恢复。 | 已合入：提取自定义服务商与 ZIP 下载途径子弹窗，并将配置导入 URL 拼装提取为纯辅助模块；未恢复 Agent 或通用设置页。新增 3 项 URL 测试，全量 107 项测试及构建通过，桌面和 390px 移动端无溢出。 |
 | 6 | [`f8d8715`](https://github.com/CookSleep/gpt_image_playground/commit/f8d8715) | 2026-07-14 | 不单独移植 | 将设置弹窗拆分分支合并回主线；对应内容由第 5 条审核，避免重复实施。 | 已审核：仅作合并来源记录，不单独移植 |
 | 7 | [`6499825`](https://github.com/CookSleep/gpt_image_playground/commit/6499825) | 2026-07-14 | 不单独移植 | 将共享 API 流解析分支合并回主线；对应内容由第 2 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
 | 8 | [`dace8a1`](https://github.com/CookSleep/gpt_image_playground/commit/dace8a1) | 2026-07-14 | 不单独移植 | 将 Agent 助手输出块分支合并回主线；对应内容已按第 1 条排除。 | 已审核：仅作合并来源记录，不单独移植 |
@@ -31,7 +31,7 @@
 | 14 | [`2062936`](https://github.com/CookSleep/gpt_image_playground/commit/2062936) | 2026-07-14 | 部分可审核 | 修复删除任务期间状态变化造成的竞争条件。应按当前 Images API 与自定义异步任务模型重新实现并补并发测试。 |  |
 | 15 | [`9beb089`](https://github.com/CookSleep/gpt_image_playground/commit/9beb089) | 2026-07-14 | 部分可审核 | 完善删除后任务、图片及持久化数据清理。只保留当前项目真实存在的数据关系。 |  |
 | 16 | [`26d53c8`](https://github.com/CookSleep/gpt_image_playground/commit/26d53c8) | 2026-07-14 | 不单独移植 | 将统一删除流程分支合并回主线；对应内容由第 13～15 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
-| 17 | [`ae9e6d6`](https://github.com/CookSleep/gpt_image_playground/commit/ae9e6d6) | 2026-07-14 | 部分可审核 | 简化设置弹窗局部状态及子弹窗交互。可用于本地 `SettingsModal` 拆分，但需保留当前自定义服务商和即时保存行为。 |  |
+| 17 | [`ae9e6d6`](https://github.com/CookSleep/gpt_image_playground/commit/ae9e6d6) | 2026-07-14 | 部分可审核 | 简化设置弹窗局部状态及子弹窗交互。可用于本地 `SettingsModal` 拆分，但需保留当前自定义服务商和即时保存行为。 | 已合入：父组件继续持有草稿、校验与即时保存，子弹窗仅接收状态和回调；`SettingsModal.tsx` 减少约 224 行。 |
 | 18 | [`8b12005`](https://github.com/CookSleep/gpt_image_playground/commit/8b12005) | 2026-07-14 | 谨慎审核 | 收紧提及标签的选区、光标边界和异常 DOM 处理，并扩充测试。应在第 3 条完成后按本地交互逐项验证。 |  |
 | 19 | [`a17a381`](https://github.com/CookSleep/gpt_image_playground/commit/a17a381) | 2026-07-14 | 部分可审核 | 简化 SSE 与图片缓存工具并增加测试。可跟随第 2、4 条吸收，但不得引入 Agent API。 | 部分已合入：图片缓存最终版及测试已随第 4 条完成；SSE 部分留待第 2 条单独审核。 |
 | 20 | [`b78fe14`](https://github.com/CookSleep/gpt_image_playground/commit/b78fe14) | 2026-07-14 | 按规则排除 | 收紧 Agent 对话及输出状态辅助函数。 | 已审核：按建议排除 |

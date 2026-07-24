@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { hasActiveDataOperations } from '../lib/dataOperations'
 import { isApiProxyAvailable, readClientDevProxyConfig } from '../lib/devProxy'
@@ -27,10 +26,13 @@ import type { ApiProfile, AppSettings, CustomProviderDefinition, ZipDownloadRout
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
+import { createProfileImportUrl } from '../lib/settingsProfileImport'
 import Checkbox from './Checkbox'
 import Select from './Select'
 import ViewportTooltip from './ViewportTooltip'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon } from './icons'
+import CustomProviderModal from './settings/CustomProviderModal'
+import ZipDownloadRouteModal, { ZIP_DOWNLOAD_ROUTE_OPTIONS } from './settings/ZipDownloadRouteModal'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -38,10 +40,6 @@ function newId(prefix: string) {
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
 const modelSelectOptions = IMAGE_MODEL_OPTIONS.map((model) => ({ label: model, value: model }))
-const ZIP_DOWNLOAD_ROUTE_OPTIONS: Array<{ route: ZipDownloadRoute; label: string; description: string }> = [
-  { route: 'task-selection', label: '任务列表 > 多选', description: '选中多个任务后，将输出图片下载为一个 ZIP。' },
-  { route: 'task-detail-all', label: '任务详情 > 下载全部', description: '任务详情弹窗中下载当前任务的所有输出图时使用 ZIP。' },
-]
 
 interface CustomProviderForm {
   json: string
@@ -241,7 +239,6 @@ export default function SettingsModal() {
   const dataTransferToastAtRef = useRef(0)
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
-  const llmPromptTooltipTimerRef = useRef<number | null>(null)
   const settingsScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const zipDownloadRouteScrollBoundaryRef = useRef<HTMLDivElement>(null)
@@ -257,7 +254,6 @@ export default function SettingsModal() {
   const [customProviderForm, setCustomProviderForm] = useState<CustomProviderForm>(createDefaultCustomProviderForm())
   const [customProviderImportError, setCustomProviderImportError] = useState<string | null>(null)
   const [profileImportUrlTooltipVisible, setProfileImportUrlTooltipVisible] = useState(false)
-  const [llmPromptTooltipVisible, setLlmPromptTooltipVisible] = useState(false)
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'data'>('general')
   const [exportConfig, setExportConfig] = useState(true)
   const [exportTasks, setExportTasks] = useState(true)
@@ -347,20 +343,12 @@ export default function SettingsModal() {
 
   useEffect(() => () => {
     if (profileImportUrlTooltipTimerRef.current != null) window.clearTimeout(profileImportUrlTooltipTimerRef.current)
-    if (llmPromptTooltipTimerRef.current != null) window.clearTimeout(llmPromptTooltipTimerRef.current)
   }, [])
 
   const clearProfileImportUrlTooltipTimer = () => {
     if (profileImportUrlTooltipTimerRef.current != null) {
       window.clearTimeout(profileImportUrlTooltipTimerRef.current)
       profileImportUrlTooltipTimerRef.current = null
-    }
-  }
-
-  const clearLlmPromptTooltipTimer = () => {
-    if (llmPromptTooltipTimerRef.current != null) {
-      window.clearTimeout(llmPromptTooltipTimerRef.current)
-      llmPromptTooltipTimerRef.current = null
     }
   }
 
@@ -396,34 +384,9 @@ export default function SettingsModal() {
     commitSettings({ ...draft, zipDownloadRoutes: nextRoutes })
   }
 
-  const createProfileImportUrl = (profile: ApiProfile, includeApiKey: boolean) => {
-    const url = new URL(window.location.href)
-    url.search = ''
-    url.hash = ''
-
-    if (profile.provider === 'openai') {
-      url.searchParams.set('apiUrl', normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl))
-      if (includeApiKey && profile.apiKey.trim()) url.searchParams.set('apiKey', profile.apiKey.trim())
-      url.searchParams.set('model', normalizeImageModel(profile.model))
-      if (profile.codexCli) url.searchParams.set('codexCli', 'true')
-      return url.toString()
-    }
-
-    const provider = draft.customProviders.find((item) => item.id === profile.provider)
-    const importProfile: ApiProfile = {
-      ...profile,
-      apiKey: includeApiKey ? profile.apiKey : '',
-    }
-    url.searchParams.set('settings', JSON.stringify({
-      customProviders: provider ? [provider] : [],
-      profiles: [importProfile],
-    }))
-    return url.toString()
-  }
-
   const copyProfileImportUrl = async (profile: ApiProfile, includeApiKey: boolean) => {
     try {
-      await copyTextToClipboard(createProfileImportUrl(profile, includeApiKey))
+      await copyTextToClipboard(createProfileImportUrl(window.location.href, profile, draft.customProviders, includeApiKey))
       showToast(includeApiKey ? '导入 URL 已复制（包含 API Key）' : '导入 URL 已复制', 'success')
     } catch (err) {
       showToast(getClipboardFailureMessage('复制导入 URL 失败', err), 'error')
@@ -1213,193 +1176,31 @@ export default function SettingsModal() {
       </div>
       </div>
 
-        {showZipDownloadRouteManager && createPortal(
-          <div
-            data-no-drag-select
-            className="fixed inset-0 z-[110] flex items-center justify-center p-4"
-            onClick={() => setShowZipDownloadRouteManager(false)}
-          >
-            <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md animate-overlay-in" />
-            <div
-              className="relative z-10 w-full max-w-md rounded-3xl bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl border border-white/50 dark:border-white/[0.08] shadow-[0_8px_40px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_40px_rgb(0,0,0,0.4)] ring-1 ring-black/5 dark:ring-white/10 animate-confirm-in flex flex-col max-h-[85vh] sm:max-h-[90vh]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="shrink-0 p-6 pb-2">
-                <div className="mb-3 flex items-center justify-between gap-4">
-                  <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">使用压缩包进行批量下载</h3>
-                  <button
-                    type="button"
-                    onClick={() => setShowZipDownloadRouteManager(false)}
-                    className="shrink-0 rounded-full p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
-                    aria-label="关闭"
-                  >
-                    <CloseIcon className="h-5 w-5" />
-                  </button>
-                </div>
-
-                <div data-selectable-text className="text-sm leading-relaxed text-gray-500 dark:text-gray-400">
-                  开启后，对应批量下载会生成一个 ZIP，而不是逐个下载图片文件。
-                </div>
-              </div>
-
-              <div ref={zipDownloadRouteScrollBoundaryRef} className="flex-1 overflow-y-auto px-6 space-y-3 custom-scrollbar min-h-0 py-2">
-                {ZIP_DOWNLOAD_ROUTE_OPTIONS.map((option) => {
-                  const isChecked = draft.zipDownloadRoutes.includes(option.route)
-                  return (
-                    <button
-                      key={option.route}
-                      type="button"
-                      onClick={() => setZipDownloadRouteEnabled(option.route, !isChecked)}
-                      className={`w-full rounded-2xl border p-3.5 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                        isChecked
-                          ? 'border-blue-500/30 bg-blue-50/50 dark:border-blue-400/30 dark:bg-blue-500/[0.05]'
-                          : 'border-gray-100 bg-gray-50/70 hover:bg-gray-100/70 dark:border-white/[0.06] dark:bg-white/[0.03] dark:hover:bg-white/[0.05]'
-                      }`}
-                      aria-pressed={isChecked}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${
-                          isChecked ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300 dark:border-white/20'
-                        }`}>
-                          {isChecked && (
-                            <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                            </svg>
-                          )}
-                        </span>
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{option.label}</span>
-                      </span>
-                      <span data-selectable-text className="mt-1.5 block pl-6 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                        {option.description}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="shrink-0 p-6 pt-4 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowZipDownloadRouteManager(false)}
-                  className="flex-1 rounded-lg bg-blue-500 py-2 text-sm font-medium text-white transition hover:bg-blue-600"
-                >
-                  完成
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
+        {showZipDownloadRouteManager && (
+          <ZipDownloadRouteModal
+            routes={draft.zipDownloadRoutes}
+            scrollBoundaryRef={zipDownloadRouteScrollBoundaryRef}
+            onSetEnabled={setZipDownloadRouteEnabled}
+            onClose={() => setShowZipDownloadRouteManager(false)}
+          />
         )}
 
-        {showCustomProviderImport && createPortal(
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in" onClick={() => {
+        {showCustomProviderImport && (
+          <CustomProviderModal
+            editing={Boolean(editingCustomProviderId)}
+            json={customProviderForm.json}
+            error={customProviderImportError}
+            scrollBoundaryRef={customProviderScrollBoundaryRef}
+            onClose={() => {
               setShowCustomProviderImport(false)
               setEditingCustomProviderId(null)
-            }} />
-            <div ref={customProviderScrollBoundaryRef} className="relative z-10 w-full max-w-lg rounded-3xl border border-white/50 bg-white/95 p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 overflow-y-auto overscroll-contain max-h-[85vh] custom-scrollbar">
-              <div className="mb-5 flex items-center justify-between gap-4">
-                <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">
-                  {editingCustomProviderId ? '编辑自定义服务商' : '创建自定义服务商'}
-                </h3>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowCustomProviderImport(false)
-                      setEditingCustomProviderId(null)
-                    }}
-                    className="rounded-full p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
-                    aria-label="关闭"
-                  >
-                    <CloseIcon className="h-5 w-5" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="mb-6 rounded-2xl bg-blue-50/50 p-4 border border-blue-100/50 dark:bg-blue-500/5 dark:border-blue-500/10">
-                <div className="mb-1.5 text-xs font-semibold text-blue-800 dark:text-blue-300">
-                  AI 一键生成与导入
-                </div>
-                <div data-selectable-text className="mb-3 text-[11px] leading-relaxed text-blue-600/80 dark:text-blue-400/80">
-                  复制提示词发给 LLM，可根据 API 文档自动生成完整的配置（包含服务商、模型、URL 等）。复制 LLM 输出的 JSON 后，点击“从剪贴板粘贴并导入”即可一键生效。
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="relative inline-flex">
-                    <button
-                      type="button"
-                      onClick={copyCustomProviderLlmPrompt}
-                      aria-label="复制用于生成完整导入 JSON 的 LLM 提示词"
-                      onMouseEnter={() => setLlmPromptTooltipVisible(true)}
-                      onMouseLeave={() => setLlmPromptTooltipVisible(false)}
-                      onFocus={() => setLlmPromptTooltipVisible(true)}
-                      onBlur={() => setLlmPromptTooltipVisible(false)}
-                      onTouchStart={() => {
-                        clearLlmPromptTooltipTimer()
-                        llmPromptTooltipTimerRef.current = window.setTimeout(() => {
-                          setLlmPromptTooltipVisible(true)
-                          llmPromptTooltipTimerRef.current = null
-                        }, 450)
-                      }}
-                      onTouchEnd={clearLlmPromptTooltipTimer}
-                      onTouchCancel={clearLlmPromptTooltipTimer}
-                      className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-blue-600 shadow-sm border border-blue-200/50 transition hover:bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 dark:text-blue-400 dark:hover:bg-blue-500/20"
-                    >
-                      复制生成提示词
-                    </button>
-                    <ViewportTooltip visible={llmPromptTooltipVisible} className="w-56 whitespace-normal text-center">
-                      生成完整的服务商和配置信息，包含模型和接口地址，导入后只需填入 API Key。
-                    </ViewportTooltip>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleCustomProviderJsonPaste}
-                    className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-blue-600 shadow-sm border border-blue-200/50 transition hover:bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 dark:text-blue-400 dark:hover:bg-blue-500/20"
-                  >
-                    从剪贴板粘贴并导入
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <label className="block">
-                  <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">手动编辑 (仅接口映射 Manifest)</span>
-                  <textarea
-                    value={customProviderForm.json}
-                    onChange={(e) => updateCustomProviderForm({ json: e.target.value })}
-                    spellCheck={false}
-                    className="min-h-[420px] w-full resize-y rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2 font-mono text-xs leading-relaxed text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                  />
-                </label>
-              </div>
-
-                {customProviderImportError && (
-                  <div data-selectable-text className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-500 dark:bg-red-500/10 dark:text-red-300">
-                    {customProviderImportError}
-                  </div>
-                )}
-                <div className="mt-4 flex justify-end gap-2 pb-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowCustomProviderImport(false)
-                      setEditingCustomProviderId(null)
-                    }}
-                    className="rounded-xl bg-gray-100 px-4 py-2 text-sm text-gray-600 transition hover:bg-gray-200 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveCustomProvider}
-                    className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-600"
-                  >
-                    {editingCustomProviderId ? '保存修改' : '创建并使用'}
-                  </button>
-                </div>
-            </div>
-          </div>
-          , document.body)}
+            }}
+            onCopyLlmPrompt={copyCustomProviderLlmPrompt}
+            onImportJson={handleCustomProviderJsonPaste}
+            onJsonChange={(json) => updateCustomProviderForm({ json })}
+            onSave={saveCustomProvider}
+          />
+        )}
     </div>
   )
 }
