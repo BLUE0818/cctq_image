@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { useStore, addImageFromUrl, ensureImageCached } from '../store'
+import { useStore, addImageFromUrl } from '../store'
+import { ensureImageCached } from '../lib/imageCache'
 import { canCopyImageToClipboard, copyBlobToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageIds, formatExportFileTime } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'

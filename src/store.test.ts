@@ -3,16 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS, type ExportData } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import * as db from './lib/db'
+import { callImageApi } from './lib/api'
 import type { TaskRecord } from './types'
-import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, importData, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, importData, markInterruptedOpenAIRunningTasks, removeMultipleTasks, removeTask, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+
+vi.mock('./lib/api', () => ({
+  callImageApi: vi.fn(),
+}))
 
 vi.mock('./lib/db', () => ({
   CURRENT_THUMBNAIL_VERSION: 1,
   getAllTasks: vi.fn(async () => []),
   putTask: vi.fn(async () => undefined),
   deleteTask: vi.fn(async () => undefined),
+  commitTaskDeletion: vi.fn(async () => undefined),
   clearTasks: vi.fn(async () => undefined),
   getImage: vi.fn(async () => null),
+  getStoredImageThumbnail: vi.fn(async () => null),
   getImageThumbnail: vi.fn(async () => null),
   getStoredFreshImageThumbnail: vi.fn(async () => null),
   getAllImageIds: vi.fn(async () => []),
@@ -42,6 +49,16 @@ function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
     elapsed: 1,
     ...overrides,
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 describe('mask draft lifecycle in store actions', () => {
@@ -94,6 +111,33 @@ describe('mask draft lifecycle in store actions', () => {
     await submitTask()
 
     expect(useStore.getState().maskDraft).toBeNull()
+  })
+
+  it('replaces a reference image without clearing an unrelated mask', () => {
+    const reference = { id: 'reference', dataUrl: 'data:image/png;base64,reference' }
+    const replacement = { id: 'replacement', dataUrl: 'data:image/png;base64,replacement' }
+    const maskDraft = { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 }
+    useStore.setState({ inputImages: [imageA, reference], maskDraft })
+
+    useStore.getState().replaceInputImage(1, replacement)
+
+    expect(useStore.getState().inputImages).toEqual([imageA, replacement])
+    expect(useStore.getState().maskDraft).toEqual(maskDraft)
+  })
+
+  it('clears the mask when replacing its target image', () => {
+    const replacement = { id: 'replacement', dataUrl: 'data:image/png;base64,replacement' }
+    useStore.setState({
+      inputImages: [imageA],
+      maskDraft: { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: imageA.id,
+    })
+
+    useStore.getState().replaceInputImage(0, replacement)
+
+    expect(useStore.getState().inputImages).toEqual([replacement])
+    expect(useStore.getState().maskDraft).toBeNull()
+    expect(useStore.getState().maskEditorImageId).toBeNull()
   })
 })
 
@@ -348,6 +392,132 @@ describe('failed task cleanup', () => {
   })
 })
 
+describe('task deletion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useStore.setState({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      tasks: [],
+      selectedTaskIds: [],
+      inputImages: [],
+      detailTaskId: null,
+      showToast: vi.fn(),
+    })
+  })
+
+  it('removes a single task from tasks and selection', async () => {
+    const deleted = task({ id: 'deleted', outputImages: ['deleted-image'] })
+    const remaining = task({ id: 'remaining' })
+    useStore.setState({
+      tasks: [deleted, remaining],
+      selectedTaskIds: [deleted.id, remaining.id],
+      detailTaskId: deleted.id,
+      lightboxImageId: 'deleted-image',
+      lightboxImageList: ['deleted-image'],
+    })
+
+    await removeTask(deleted)
+
+    expect(useStore.getState().tasks).toEqual([remaining])
+    expect(useStore.getState().selectedTaskIds).toEqual([remaining.id])
+    expect(useStore.getState().detailTaskId).toBeNull()
+    expect(useStore.getState().lightboxImageId).toBeNull()
+    expect(useStore.getState().lightboxImageList).toEqual([])
+    expect(db.commitTaskDeletion).toHaveBeenCalledWith([deleted.id])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('记录已删除', 'success')
+  })
+
+  it('counts duplicate and missing ids only when they match existing tasks', async () => {
+    const deleted = task({ id: 'deleted' })
+    const remaining = task({ id: 'remaining' })
+    useStore.setState({ tasks: [deleted, remaining], selectedTaskIds: [deleted.id, 'missing'] })
+
+    await removeMultipleTasks([deleted.id, deleted.id, 'missing'])
+
+    expect(useStore.getState().tasks).toEqual([remaining])
+    expect(useStore.getState().selectedTaskIds).toEqual([])
+    expect(db.commitTaskDeletion).toHaveBeenCalledWith([deleted.id])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('已删除 1 条记录', 'success')
+  })
+
+  it('keeps images that are still referenced by remaining tasks or input', async () => {
+    const deleted = task({ id: 'deleted', outputImages: ['shared-task', 'shared-input', 'orphan'] })
+    const remaining = task({ id: 'remaining', inputImageIds: ['shared-task'] })
+    useStore.setState({
+      tasks: [deleted, remaining],
+      inputImages: [{ id: 'shared-input', dataUrl: 'data:image/png;base64,input' }],
+    })
+
+    await removeTask(deleted)
+
+    expect(db.deleteImage).toHaveBeenCalledTimes(1)
+    expect(db.deleteImage).toHaveBeenCalledWith('orphan')
+  })
+
+  it('preserves task creation and updates while deletion persistence is pending', async () => {
+    const commit = deferred<undefined>()
+    vi.mocked(db.commitTaskDeletion).mockReturnValueOnce(commit.promise)
+    const deleted = task({ id: 'deleted' })
+    const existing = task({ id: 'existing' })
+    const created = task({ id: 'created' })
+    useStore.setState({ tasks: [deleted, existing] })
+
+    const deleting = removeTask(deleted)
+    useStore.setState((state) => ({
+      tasks: [created, ...state.tasks.map((item) => item.id === existing.id ? { ...item, prompt: 'updated' } : item)],
+    }))
+    commit.resolve(undefined)
+    await deleting
+
+    expect(useStore.getState().tasks.map((item) => item.id)).toEqual([created.id, existing.id])
+    expect(useStore.getState().tasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
+  })
+
+  it('removes output images that arrive after the task is deleted', async () => {
+    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
+    const imageStore = deferred<string>()
+    vi.mocked(callImageApi).mockReturnValueOnce(request.promise)
+    vi.mocked(db.storeImage).mockReturnValueOnce(imageStore.promise)
+
+    await submitTask()
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    const running = useStore.getState().tasks[0]
+    request.resolve({
+      images: ['late-output'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    await vi.waitFor(() => expect(db.storeImage).toHaveBeenCalledWith('late-output', 'generated'))
+    await removeTask(running)
+    imageStore.resolve('late-output')
+
+    await vi.waitFor(() => expect(db.deleteImage).toHaveBeenCalledWith('late-output'))
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().detailTaskId).toBeNull()
+  })
+
+  it('restores an image when a new reference appears during deletion', async () => {
+    vi.mocked(db.getImage).mockResolvedValueOnce({
+      id: 'referenced-late',
+      dataUrl: 'data:image/png;base64,original',
+      createdAt: 1,
+      source: 'generated',
+    })
+    vi.mocked(db.deleteImage).mockImplementationOnce(async () => {
+      useStore.setState({ tasks: [task({ id: 'new-task', inputImageIds: ['referenced-late'] })] })
+    })
+    const deleted = task({ id: 'deleted', outputImages: ['referenced-late'] })
+    useStore.setState({ tasks: [deleted] })
+
+    await removeTask(deleted)
+
+    expect(db.putImage).toHaveBeenCalledWith(expect.objectContaining({ id: 'referenced-late' }))
+  })
+})
+
 function importFile(manifest: ExportData, files: Record<string, Uint8Array> = {}) {
   const bytes = zipSync({
     'manifest.json': strToU8(JSON.stringify(manifest)),
@@ -389,6 +559,47 @@ describe('multipart data import', () => {
 
     await expect(importData([part2, part1], { importConfig: false, importTasks: true })).resolves.toBe(true)
     expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.id)).toEqual(['multipart-task-a', 'multipart-task-b'])
+  })
+
+  it('imports multiple regular backups together', async () => {
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      tasks: [task({ id: 'regular-task-a' })],
+      imageFiles: {},
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      tasks: [task({ id: 'regular-task-b' })],
+      imageFiles: {},
+    })
+
+    await expect(importData([backupA, backupB], { importConfig: false, importTasks: true })).resolves.toBe(true)
+    expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.id)).toEqual(['regular-task-a', 'regular-task-b'])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('已导入 2 条记录', 'success')
+  })
+
+  it('merges and deduplicates settings from multiple regular backups', async () => {
+    useStore.setState({ settings: normalizeSettings(DEFAULT_SETTINGS) })
+    const shared = createDefaultOpenAIProfile({ id: 'shared', name: '共享', apiKey: 'shared-key' })
+    const profileA = createDefaultOpenAIProfile({ id: 'profile-a', name: '配置 A', apiKey: 'key-a' })
+    const profileB = createDefaultOpenAIProfile({ id: 'profile-b', name: '配置 B', apiKey: 'key-b' })
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [shared, profileA], activeProfileId: profileA.id }),
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [shared, profileB], activeProfileId: profileB.id }),
+    })
+
+    await expect(importData([backupA, backupB], { importConfig: true, importTasks: false })).resolves.toBe(true)
+    const apiKeys = useStore.getState().settings.profiles.map((profile) => profile.apiKey)
+    expect(apiKeys).toEqual(expect.arrayContaining(['shared-key', 'key-a', 'key-b']))
+    expect(apiKeys.filter((apiKey) => apiKey === 'shared-key')).toHaveLength(1)
   })
 
   it('rejects an incomplete multipart backup before writing data', async () => {

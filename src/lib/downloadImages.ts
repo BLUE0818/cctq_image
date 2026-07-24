@@ -1,4 +1,4 @@
-import { ensureImageCached } from '../store'
+import { ensureImageCached } from './imageCache'
 import { zipSync } from 'fflate'
 import type { TaskRecord } from '../types'
 

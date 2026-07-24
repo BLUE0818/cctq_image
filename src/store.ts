@@ -12,15 +12,17 @@ import type {
 import { DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { replaceImageMentionsForApi } from './lib/promptImageMentions'
+import { moveDraftImage, orderImagesWithMaskFirst, removeDraftImage, replaceDraftImage, setDraftImages } from './lib/inputDraftState'
+import { encodePersistedState, mergePersistedState } from './lib/persistedState'
 import {
-  CURRENT_THUMBNAIL_VERSION,
   getAllTasks,
   putTask,
   deleteTask as dbDeleteTask,
+  commitTaskDeletion,
   clearTasks as dbClearTasks,
   getImage,
+  getStoredImageThumbnail,
   getImageThumbnail,
-  getStoredFreshImageThumbnail,
   getAllImageIds,
   getAllImages,
   putImage,
@@ -47,257 +49,45 @@ import {
   readExportZipFileAsDataUrl,
   readExportZipManifest,
 } from './lib/exportZip'
+import {
+  cacheImage,
+  cacheThumbnail,
+  clearImageCaches,
+  deleteCachedImage,
+  deleteImageCacheEntry,
+  ensureImageCached,
+  scheduleThumbnailBackfill,
+} from './lib/imageCache'
+import {
+  createTaskDonePatch,
+  createTaskErrorPatch,
+  firstActualParams,
+  hasActualParams,
+  mapActualParamsByImage,
+  mapRevisedPromptsByImage,
+  markInterruptedOpenAIRunningTasks,
+} from './lib/taskState'
 
-// ===== Image cache =====
-// 内存缓存，id → dataUrl。只保留少量最近使用图片，避免大量 4K data URL 常驻内存。
+export {
+  ensureImageCached,
+  ensureImageThumbnailCached,
+  getCachedImage,
+  subscribeImageThumbnail,
+} from './lib/imageCache'
+export { markInterruptedOpenAIRunningTasks } from './lib/taskState'
 
-const imageCache = new Map<string, string>()
-const thumbnailCache = new Map<string, { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }>()
-const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
-const thumbnailBackfillRunningIds = new Set<string>()
-const thumbnailSubscribers = new Map<string, Set<(thumbnail: { dataUrl: string; width?: number; height?: number }) => void>>()
-let thumbnailBackfillScheduled = false
-const MAX_IMAGE_CACHE_ENTRIES = 8
-const MAX_THUMBNAIL_CACHE_ENTRIES = 80
-const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const OPENAI_INTERRUPTED_ERROR = '请求中断'
 
 function createOpenAITimeoutError(timeoutSeconds: number) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
 }
 
-export function getCachedImage(id: string): string | undefined {
-  const dataUrl = imageCache.get(id)
-  if (dataUrl) {
-    imageCache.delete(id)
-    imageCache.set(id, dataUrl)
-  }
-  return dataUrl
-}
-
-function cacheImage(id: string, dataUrl: string) {
-  imageCache.delete(id)
-  imageCache.set(id, dataUrl)
-  while (imageCache.size > MAX_IMAGE_CACHE_ENTRIES) {
-    const oldestKey = imageCache.keys().next().value
-    if (oldestKey == null) break
-    imageCache.delete(oldestKey)
-  }
-}
-
-function getCachedThumbnail(id: string) {
-  const thumbnail = thumbnailCache.get(id)
-  if (thumbnail?.thumbnailVersion === CURRENT_THUMBNAIL_VERSION) {
-    thumbnailCache.delete(id)
-    thumbnailCache.set(id, thumbnail)
-    return thumbnail
-  }
-  if (thumbnail) {
-    thumbnailCache.delete(id)
-  }
-  return undefined
-}
-
-function cacheThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }) {
-  if (thumbnail.thumbnailVersion !== CURRENT_THUMBNAIL_VERSION) return
-  thumbnailCache.delete(id)
-  thumbnailCache.set(id, thumbnail)
-  while (thumbnailCache.size > MAX_THUMBNAIL_CACHE_ENTRIES) {
-    const oldestKey = thumbnailCache.keys().next().value
-    if (oldestKey == null) break
-    thumbnailCache.delete(oldestKey)
-  }
-}
-
-export async function ensureImageCached(id: string): Promise<string | undefined> {
-  const cached = getCachedImage(id)
-  if (cached) return cached
-  const rec = await getImage(id)
-  if (rec) {
-    cacheImage(id, rec.dataUrl)
-    return rec.dataUrl
-  }
-  return undefined
-}
-
-export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
-  const cached = getCachedThumbnail(id)
-  if (cached) return cached
-
-  const rec = await getStoredFreshImageThumbnail(id)
-  if (!rec?.thumbnailDataUrl) {
-    scheduleThumbnailBackfill([id], 'visible')
-    return undefined
-  }
-
-  const thumbnail = {
-    dataUrl: rec.thumbnailDataUrl,
-    width: rec.width,
-    height: rec.height,
-    thumbnailVersion: rec.thumbnailVersion,
-  }
-  cacheThumbnail(id, thumbnail)
-  return thumbnail
-}
-
-export function subscribeImageThumbnail(id: string, callback: (thumbnail: { dataUrl: string; width?: number; height?: number }) => void) {
-  let subscribers = thumbnailSubscribers.get(id)
-  if (!subscribers) {
-    subscribers = new Set()
-    thumbnailSubscribers.set(id, subscribers)
-  }
-  subscribers.add(callback)
-  return () => {
-    subscribers?.delete(callback)
-    if (subscribers?.size === 0) thumbnailSubscribers.delete(id)
-  }
-}
-
-function notifyImageThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number }) {
-  thumbnailSubscribers.get(id)?.forEach((callback) => callback(thumbnail))
-}
-
-function scheduleThumbnailBackfill(ids: Iterable<string>, priority: 'visible' | 'background' = 'background') {
-  for (const id of ids) {
-    if (getCachedThumbnail(id) || thumbnailBackfillRunningIds.has(id)) continue
-    const currentPriority = thumbnailBackfillIds.get(id)
-    if (!currentPriority || priority === 'visible') thumbnailBackfillIds.set(id, priority)
-  }
-  scheduleThumbnailBackfillTick()
-}
-
-function scheduleThumbnailBackfillTick() {
-  if (thumbnailBackfillScheduled || thumbnailBackfillIds.size === 0) return
-  thumbnailBackfillScheduled = true
-
-  const run = () => {
-    thumbnailBackfillScheduled = false
-    void processNextThumbnailBackfill()
-  }
-
-  if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(run, { timeout: 2_000 })
-  } else {
-    globalThis.setTimeout(run, 250)
-  }
-}
-
-async function processNextThumbnailBackfill() {
-  if (thumbnailBackfillRunningIds.size > 0) return
-
-  const ids = await getNextThumbnailBackfillBatch()
-  for (const id of ids) startThumbnailBackfill(id)
-
-  if (thumbnailBackfillIds.size > 0) scheduleThumbnailBackfillTick()
-}
-
-async function getNextThumbnailBackfillBatch() {
-  const candidates = getOrderedThumbnailBackfillIds().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
-  if (candidates.length === 0) return []
-
-  const sizes = await Promise.all(candidates.map(async (id) => {
-    const image = await getImage(id)
-    return { width: image?.width, height: image?.height }
-  }))
-  const concurrency = getThumbnailConcurrencyForBatch(sizes)
-  const selected = candidates.slice(0, concurrency)
-  for (const id of selected) thumbnailBackfillIds.delete(id)
-  return selected
-}
-
-function getOrderedThumbnailBackfillIds() {
-  const visible: string[] = []
-  const background: string[] = []
-  for (const [id, priority] of thumbnailBackfillIds) {
-    if (priority === 'visible') visible.push(id)
-    else background.push(id)
-  }
-  return [...visible, ...background]
-}
-
-function getThumbnailConcurrencyForBatch(sizes: Array<{ width?: number; height?: number }>) {
-  let maxMegapixels = 0
-  for (const { width, height } of sizes) {
-    if (!width || !height) return 1
-    maxMegapixels = Math.max(maxMegapixels, (width * height) / 1_000_000)
-  }
-  const megapixels = maxMegapixels
-  if (megapixels >= 8) return 1
-  if (megapixels >= 4) return 2
-  if (megapixels >= 2) return 3
-  return 4
-}
-
-function startThumbnailBackfill(id: string) {
-  thumbnailBackfillRunningIds.add(id)
-
-  void (async () => {
-    if (getCachedThumbnail(id)) return
-
-    const thumbnail = await getImageThumbnail(id)
-    if (thumbnail?.thumbnailDataUrl) {
-      cacheThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-        thumbnailVersion: thumbnail.thumbnailVersion,
-      })
-      notifyImageThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-      })
-    }
-  })().catch(() => {
-    // Keep thumbnail generation best-effort; cards remain on placeholders if it fails.
-  }).finally(() => {
-    thumbnailBackfillRunningIds.delete(id)
-    scheduleThumbnailBackfillTick()
-  })
-}
-
-function orderImagesWithMaskFirst(images: InputImage[], maskTargetImageId: string | null | undefined) {
-  if (!maskTargetImageId) return images
-  const maskIdx = images.findIndex((img) => img.id === maskTargetImageId)
-  if (maskIdx <= 0) return images
-  const next = [...images]
-  const [maskImage] = next.splice(maskIdx, 1)
-  next.unshift(maskImage)
-  return next
-}
-
 export function getPersistedState(state: AppState) {
-  const settings = normalizeSettings(state.settings)
-  return {
-    settings,
-    params: state.params,
-    ...(settings.persistInputOnRestart
-      ? {
-          prompt: state.prompt,
-          inputImages: state.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
-        }
-      : {}),
-    dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
-  }
-}
-
-function mergePersistedState(persistedState: unknown, currentState: AppState): AppState {
-  if (!persistedState || typeof persistedState !== 'object') return currentState
-
-  const persisted = persistedState as Partial<AppState>
-  const settings = normalizeSettings(persisted.settings ?? currentState.settings)
-  return {
-    ...currentState,
-    ...persisted,
-    settings,
-    prompt: settings.persistInputOnRestart && typeof persisted.prompt === 'string' ? persisted.prompt : '',
-    inputImages: settings.persistInputOnRestart && Array.isArray(persisted.inputImages) ? persisted.inputImages : [],
-  }
+  return encodePersistedState(state)
 }
 
 // ===== Store 类型 =====
@@ -314,6 +104,7 @@ interface AppState {
   setPrompt: (p: string) => void
   inputImages: InputImage[]
   addInputImage: (img: InputImage) => void
+  replaceInputImage: (idx: number, img: InputImage) => void
   removeInputImage: (idx: number) => void
   clearInputImages: () => void
   setInputImages: (imgs: InputImage[]) => void
@@ -436,43 +227,23 @@ export const useStore = create<AppState>()(
           if (s.inputImages.find((i) => i.id === img.id)) return s
           return { inputImages: [...s.inputImages, img] }
         }),
-      removeInputImage: (idx) =>
+      replaceInputImage: (idx, img) =>
         set((s) => {
-          const removed = s.inputImages[idx]
-          const shouldClearMask = removed?.id === s.maskDraft?.targetImageId
-          return {
-            inputImages: s.inputImages.filter((_, i) => i !== idx),
-            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
-          }
+          return replaceDraftImage(s, idx, img) ?? s
         }),
+      removeInputImage: (idx) =>
+        set((s) => removeDraftImage(s, idx)),
       clearInputImages: () =>
         set((s) => {
-          for (const img of s.inputImages) imageCache.delete(img.id)
+          for (const img of s.inputImages) deleteCachedImage(img.id)
           return { inputImages: [], maskDraft: null, maskEditorImageId: null }
         }),
       setInputImages: (imgs) =>
-        set((s) => {
-          const inputImages = orderImagesWithMaskFirst(imgs, s.maskDraft?.targetImageId)
-          const shouldClearMask =
-            Boolean(s.maskDraft) && !inputImages.some((img) => img.id === s.maskDraft?.targetImageId)
-          return {
-            inputImages,
-            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
-          }
-        }),
+        set((s) => setDraftImages(s, imgs)),
       moveInputImage: (fromIdx, toIdx) =>
         set((s) => {
-          const images = [...s.inputImages]
-          if (fromIdx < 0 || fromIdx >= images.length) return s
-          const maskTargetImageId = s.maskDraft?.targetImageId
-          if (maskTargetImageId && images[fromIdx]?.id === maskTargetImageId) return s
-          const minTargetIdx = maskTargetImageId && images.some((img) => img.id === maskTargetImageId) ? 1 : 0
-          const targetIdx = Math.max(minTargetIdx, Math.min(images.length, toIdx))
-          const insertIdx = fromIdx < targetIdx ? targetIdx - 1 : targetIdx
-          if (insertIdx === fromIdx) return s
-          const [moved] = images.splice(fromIdx, 1)
-          images.splice(insertIdx, 0, moved)
-          return { inputImages: images }
+          const inputImages = moveDraftImage(s, fromIdx, toIdx)
+          return inputImages ? { inputImages } : s
         }),
       maskDraft: null,
       setMaskDraft: (maskDraft) =>
@@ -586,26 +357,6 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
   return Boolean(submitMapping.taskIdPath)
 }
 
-export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
-  const interruptedTasks: TaskRecord[] = []
-  const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
-
-    const updated: TaskRecord = {
-      ...task,
-      status: 'error',
-      error: OPENAI_INTERRUPTED_ERROR,
-      falRecoverable: false,
-      finishedAt: now,
-      elapsed: Math.max(0, now - task.createdAt),
-    }
-    interruptedTasks.push(updated)
-    return updated
-  })
-
-  return { tasks: updatedTasks, interruptedTasks }
-}
-
 function clearOpenAIWatchdogTimer(taskId: string) {
   const timer = openAIWatchdogTimers.get(taskId)
   if (timer) clearTimeout(timer)
@@ -617,11 +368,8 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
   if (!task || !isRunningOpenAITask(task)) return false
 
   updateTaskInStore(taskId, {
-    status: 'error',
-    error,
+    ...createTaskErrorPatch(task, error, now),
     falRecoverable: false,
-    finishedAt: now,
-    elapsed: Math.max(0, now - task.createdAt),
   })
   return true
 }
@@ -742,6 +490,7 @@ function clearFalRecoveryTimer(taskId: string) {
 
 function scheduleFalRecovery(taskId: string, delayMs = FAL_RECOVERY_POLL_MS) {
   if (falRecoveryTimers.has(taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
   const timer = setTimeout(() => {
     falRecoveryTimers.delete(taskId)
   }, delayMs)
@@ -756,28 +505,12 @@ function clearCustomRecoveryTimer(taskId: string) {
 
 function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_MS) {
   if (customRecoveryTimers.has(taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
   const timer = setTimeout(() => {
     customRecoveryTimers.delete(taskId)
     recoverCustomTask(taskId)
   }, delayMs)
   customRecoveryTimers.set(taskId, timer)
-}
-
-function hasActualParams(params: Partial<TaskParams> | undefined): params is Partial<TaskParams> {
-  return Boolean(params && Object.keys(params).length > 0)
-}
-
-function firstActualParams(paramsList: Array<Partial<TaskParams> | undefined> | undefined): Partial<TaskParams> | undefined {
-  return paramsList?.find(hasActualParams)
-}
-
-function mapActualParamsByImage(outputIds: string[], paramsList: Array<Partial<TaskParams> | undefined> | undefined) {
-  const mapped = paramsList?.reduce<Record<string, Partial<TaskParams>>>((acc, params, index) => {
-    const imgId = outputIds[index]
-    if (imgId && hasActualParams(params)) acc[imgId] = params
-    return acc
-  }, {})
-  return mapped && Object.keys(mapped).length > 0 ? mapped : undefined
 }
 
 async function readImageSizeParam(dataUrl: string): Promise<Partial<TaskParams> | undefined> {
@@ -826,7 +559,7 @@ async function resolveImageSizeParamsList(
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
   const storedTasks = await getAllTasks()
-  const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks)
+  const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now())
   await Promise.all(interruptedTasks.map((task) => putTask(task)))
   useStore.getState().setTasks(tasks)
   for (const task of tasks) {
@@ -1013,13 +746,11 @@ async function executeTask(taskId: string) {
   if (!task) return
   const taskProfile = getTaskApiProfile(settings, task)
   if (!taskProfile && task.apiProfileId) {
+    const now = Date.now()
     updateTaskInStore(taskId, {
-      status: 'error',
-      error: '找不到此任务所使用的 API 配置。',
+      ...createTaskErrorPatch(task, '找不到此任务所使用的 API 配置。', now),
       falRecoverable: false,
       customRecoverable: false,
-      finishedAt: Date.now(),
-      elapsed: Date.now() - task.createdAt,
     })
     return
   }
@@ -1097,11 +828,9 @@ async function executeTask(taskId: string) {
     })()
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPromptByImage = shouldStoreRevisedPrompts ? result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
-      const imgId = outputIds[index]
-      if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
-      return acc
-    }, {}) : undefined
+    const revisedPromptByImage = shouldStoreRevisedPrompts
+      ? mapRevisedPromptsByImage(outputIds, result.revisedPrompts)
+      : undefined
     const promptWasRevised = shouldStoreRevisedPrompts && result.revisedPrompts?.some(
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
     )
@@ -1116,17 +845,19 @@ async function executeTask(taskId: string) {
 
     // 更新任务
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') return
+    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
+      await deleteUnreferencedImageIds(outputIds)
+      return
+    }
     clearOpenAIWatchdogTimer(taskId)
+    const now = Date.now()
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
-      status: 'done',
-      finishedAt: Date.now(),
-      elapsed: Date.now() - task.createdAt,
+      ...createTaskDonePatch(task, now),
       falRecoverable: false,
       customRecoverable: false,
     })
@@ -1147,8 +878,8 @@ async function executeTask(taskId: string) {
     }
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
-    const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
-    if (latestTask.status !== 'running') return
+    const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
+    if (!latestTask || latestTask.status !== 'running') return
     const latestFalRequestInfo = falRequestInfo ?? (latestTask.falRequestId && latestTask.falEndpoint
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
@@ -1175,21 +906,19 @@ async function executeTask(taskId: string) {
       })
       scheduleCustomRecovery(taskId)
     } else {
+      const now = Date.now()
       updateTaskInStore(taskId, {
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
+        ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), now),
         errorResponse: getApiErrorResponseSnapshot(err),
         falRecoverable: false,
         customRecoverable: false,
-        finishedAt: Date.now(),
-        elapsed: Date.now() - task.createdAt,
       })
       useStore.getState().setDetailTaskId(taskId)
     }
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {
-      imageCache.delete(imgId)
+      deleteCachedImage(imgId)
     }
   }
 }
@@ -1317,55 +1046,97 @@ export async function editOutputs(task: TaskRecord) {
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
 }
 
+function addTaskImageIds(target: Set<string>, task: TaskRecord) {
+  for (const id of task.inputImageIds || []) target.add(id)
+  if (task.maskImageId) target.add(task.maskImageId)
+  for (const id of task.outputImages || []) target.add(id)
+}
+
+function isImageReferencedByState(state: AppState, imageId: string) {
+  return state.inputImages.some((image) => image.id === imageId)
+    || state.tasks.some((task) =>
+      task.maskImageId === imageId
+      || task.inputImageIds.includes(imageId)
+      || task.outputImages.includes(imageId),
+    )
+}
+
+async function deleteStoredImageIfUnreferenced(imageId: string): Promise<boolean> {
+  if (isImageReferencedByState(useStore.getState(), imageId)) return false
+  const [image, thumbnail] = await Promise.all([getImage(imageId), getStoredImageThumbnail(imageId)])
+  if (isImageReferencedByState(useStore.getState(), imageId)) return false
+
+  await deleteImage(imageId)
+  if (!isImageReferencedByState(useStore.getState(), imageId)) {
+    deleteImageCacheEntry(imageId)
+    useStore.setState((state) => {
+      const lightboxImageList = state.lightboxImageList.filter((id) => id !== imageId)
+      return {
+        lightboxImageList,
+        lightboxImageId: state.lightboxImageId === imageId ? lightboxImageList[0] ?? null : state.lightboxImageId,
+      }
+    })
+    return true
+  }
+
+  if (image) {
+    await putImage(image)
+    cacheImage(image.id, image.dataUrl)
+  }
+  if (thumbnail) {
+    await putImageThumbnail(thumbnail)
+    cacheThumbnail(thumbnail.id, {
+      dataUrl: thumbnail.thumbnailDataUrl,
+      width: thumbnail.width,
+      height: thumbnail.height,
+      thumbnailVersion: thumbnail.thumbnailVersion,
+    })
+  }
+  return false
+}
+
+async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
+  for (const imageId of new Set(imageIds)) await deleteStoredImageIfUnreferenced(imageId)
+}
+
+async function removeTasks(taskIds: string[]) {
+  const toDelete = new Set(taskIds)
+  let deletedTasks: TaskRecord[] = []
+
+  useStore.setState((state) => {
+    deletedTasks = state.tasks.filter((task) => toDelete.has(task.id))
+    return {
+      tasks: state.tasks.filter((task) => !toDelete.has(task.id)),
+      selectedTaskIds: state.selectedTaskIds.filter((id) => !toDelete.has(id)),
+      detailTaskId: state.detailTaskId && toDelete.has(state.detailTaskId) ? null : state.detailTaskId,
+    }
+  })
+  if (!deletedTasks.length) return 0
+
+  const imageIds = new Set<string>()
+  for (const task of deletedTasks) {
+    addTaskImageIds(imageIds, task)
+    clearFalRecoveryTimer(task.id)
+    clearCustomRecoveryTimer(task.id)
+    clearOpenAIWatchdogTimer(task.id)
+  }
+
+  try {
+    await commitTaskDeletion(deletedTasks.map((task) => task.id))
+  } catch (error) {
+    console.warn('原子删除任务失败，改用逐项删除', error)
+    await Promise.all(deletedTasks.map((task) => dbDeleteTask(task.id)))
+  }
+  await deleteUnreferencedImageIds(imageIds)
+  return deletedTasks.length
+}
+
 /** 删除多条任务 */
 export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, showToast, clearSelection, selectedTaskIds } = useStore.getState()
-  
   if (!taskIds.length) return
-
-  const toDelete = new Set(taskIds)
-  const remaining = tasks.filter(t => !toDelete.has(t.id))
-
-  // 收集所有被删除任务的关联图片
-  const deletedImageIds = new Set<string>()
-  for (const t of tasks) {
-    if (toDelete.has(t.id)) {
-      for (const id of t.inputImageIds || []) deletedImageIds.add(id)
-      if (t.maskImageId) deletedImageIds.add(t.maskImageId)
-      for (const id of t.outputImages || []) deletedImageIds.add(id)
-    }
-  }
-
-  setTasks(remaining)
-  for (const id of taskIds) {
-    await dbDeleteTask(id)
-  }
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    for (const id of t.inputImageIds || []) stillUsed.add(id)
-    if (t.maskImageId) stillUsed.add(t.maskImageId)
-    for (const id of t.outputImages || []) stillUsed.add(id)
-  }
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of deletedImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
-  }
-
-  // 如果删除的任务在选中列表中，则移除
-  const newSelection = selectedTaskIds.filter(id => !toDelete.has(id))
-  if (newSelection.length !== selectedTaskIds.length) {
-    useStore.getState().setSelectedTaskIds(newSelection)
-  }
-
-  showToast(`已删除 ${taskIds.length} 条记录`, 'success')
+  const deletedCount = await removeTasks(taskIds)
+  if (!deletedCount) return
+  useStore.getState().showToast(`已删除 ${deletedCount} 条记录`, 'success')
 }
 
 /** 删除所有失败任务 */
@@ -1396,39 +1167,9 @@ export async function clearFailedTasks(taskIds?: string[]) {
 
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, showToast } = useStore.getState()
-
-  // 收集此任务关联的图片
-  const taskImageIds = new Set([
-    ...(task.inputImageIds || []),
-    ...(task.maskImageId ? [task.maskImageId] : []),
-    ...(task.outputImages || []),
-  ])
-
-  // 从列表移除
-  const remaining = tasks.filter((t) => t.id !== task.id)
-  setTasks(remaining)
-  await dbDeleteTask(task.id)
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    for (const id of t.inputImageIds || []) stillUsed.add(id)
-    if (t.maskImageId) stillUsed.add(t.maskImageId)
-    for (const id of t.outputImages || []) stillUsed.add(id)
-  }
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of taskImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
-  }
-
-  showToast('记录已删除', 'success')
+  const deletedCount = await removeTasks([task.id])
+  if (!deletedCount) return
+  useStore.getState().showToast('记录已删除', 'success')
 }
 
 /** 清空数据选项 */
@@ -1444,9 +1185,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   if (options.clearTasks) {
     await dbClearTasks()
     await clearImages()
-    imageCache.clear()
-    thumbnailCache.clear()
-    thumbnailBackfillIds.clear()
+    clearImageCaches()
     setTasks([])
     clearInputImages()
     clearMaskDraft()
@@ -1471,6 +1210,11 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     const imgId = await storeImage(dataUrl, 'generated')
     cacheImage(imgId, dataUrl)
     outputIds.push(imgId)
+  }
+  const latestBeforeUpdate = useStore.getState().tasks.find((item) => item.id === task.id)
+  if (!latestBeforeUpdate || latestBeforeUpdate.status === 'done') {
+    await deleteUnreferencedImageIds(outputIds)
+    return
   }
 
   updateTaskInStore(task.id, {
@@ -1505,6 +1249,7 @@ async function recoverCustomTask(taskId: string) {
     await completeRecoveredCustomTask(task, result)
   } catch (err) {
     clearCustomRecoveryTimer(taskId)
+    if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
     updateTaskInStore(taskId, {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),
@@ -1645,13 +1390,11 @@ export async function importData(input: File | File[], options: ImportOptions = 
         throw new Error(`分片备份不完整，请一次选择同一备份的全部 ${first.total} 个 ZIP。`)
       }
       selected.sort((left, right) => left.manifest.backupPart!.index - right.manifest.backupPart!.index)
-    } else if (selected.length > 1) {
-      throw new Error('多个普通备份不能同时导入，请每次选择一个 ZIP。')
     }
 
-    const data = selected.find((part) => part.manifest.settings)?.manifest ?? selected[0].manifest
-    if (options.importConfig && !options.importTasks && !data.settings) {
-      throw new Error('所选分片不包含配置数据。')
+    const settingsManifests = selected.filter((part) => part.manifest.settings)
+    if (options.importConfig && !options.importTasks && !settingsManifests.length) {
+      throw new Error('所选备份不包含配置数据。')
     }
     const importedTasks = selected.flatMap((part) => part.manifest.tasks ?? [])
     const hasTaskData = selected.some((part) => part.manifest.tasks != null || part.manifest.imageFiles != null)
@@ -1703,15 +1446,19 @@ export async function importData(input: File | File[], options: ImportOptions = 
       scheduleThumbnailBackfill(importedImageIds)
     }
 
-    if (options.importConfig && data.settings) {
+    if (options.importConfig && settingsManifests.length) {
       const state = useStore.getState()
-      state.setSettings(mergeImportedSettings(state.settings, data.settings))
+      const settings = settingsManifests.reduce(
+        (current, part) => mergeImportedSettings(current, part.manifest.settings),
+        state.settings,
+      )
+      state.setSettings(settings)
     }
 
     let msg = '数据已成功导入'
     if (options.importTasks && hasTaskData) {
       msg = `已导入 ${importedTasks.length} 条记录`
-    } else if (options.importConfig && data.settings) {
+    } else if (options.importConfig && settingsManifests.length) {
       msg = '配置已成功导入'
     }
 
@@ -1726,12 +1473,21 @@ export async function importData(input: File | File[], options: ImportOptions = 
 }
 
 /** 添加图片到输入（文件上传） */
-export async function addImageFromFile(file: File): Promise<void> {
-  if (!file.type.startsWith('image/')) return
+export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
+  if (!file.type.startsWith('image/')) return null
   const dataUrl = await fileToDataUrl(file)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
-  useStore.getState().addInputImage({ id, dataUrl })
+  return { id, dataUrl }
+}
+
+export async function deleteImageIfUnreferenced(imageId: string): Promise<boolean> {
+  return deleteStoredImageIfUnreferenced(imageId)
+}
+
+export async function addImageFromFile(file: File): Promise<void> {
+  const image = await createInputImageFromFile(file)
+  if (image) useStore.getState().addInputImage(image)
 }
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */
