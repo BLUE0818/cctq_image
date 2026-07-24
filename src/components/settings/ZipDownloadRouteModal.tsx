@@ -88,7 +88,7 @@ export default function ZipDownloadRouteModal({
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 rounded-lg bg-blue-500 py-2 text-sm font-medium text-white transition hover:bg-blue-600"
+            className="flex-1 rounded-xl bg-blue-500 py-2 text-sm font-medium text-white transition hover:bg-blue-600"
           >
             完成
           </button>

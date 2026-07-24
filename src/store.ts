@@ -135,6 +135,7 @@ interface AppState {
   setPrompt: (p: string) => void
   inputImages: InputImage[]
   addInputImage: (img: InputImage) => void
+  replaceInputImage: (idx: number, img: InputImage) => void
   removeInputImage: (idx: number) => void
   clearInputImages: () => void
   setInputImages: (imgs: InputImage[]) => void
@@ -256,6 +257,18 @@ export const useStore = create<AppState>()(
         set((s) => {
           if (s.inputImages.find((i) => i.id === img.id)) return s
           return { inputImages: [...s.inputImages, img] }
+        }),
+      replaceInputImage: (idx, img) =>
+        set((s) => {
+          if (idx < 0 || idx >= s.inputImages.length) return s
+          if (s.inputImages.some((item, itemIdx) => itemIdx !== idx && item.id === img.id)) return s
+          const replaced = s.inputImages[idx]
+          const inputImages = s.inputImages.map((item, itemIdx) => itemIdx === idx ? img : item)
+          const shouldClearMask = replaced.id === s.maskDraft?.targetImageId
+          return {
+            inputImages,
+            ...(shouldClearMask ? { maskDraft: null, maskEditorImageId: null } : {}),
+          }
         }),
       removeInputImage: (idx) =>
         set((s) => {
@@ -1498,12 +1511,31 @@ export async function importData(input: File | File[], options: ImportOptions = 
 }
 
 /** 添加图片到输入（文件上传） */
-export async function addImageFromFile(file: File): Promise<void> {
-  if (!file.type.startsWith('image/')) return
+export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
+  if (!file.type.startsWith('image/')) return null
   const dataUrl = await fileToDataUrl(file)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
-  useStore.getState().addInputImage({ id, dataUrl })
+  return { id, dataUrl }
+}
+
+export async function deleteImageIfUnreferenced(imageId: string): Promise<boolean> {
+  const state = useStore.getState()
+  const referenced = state.inputImages.some((image) => image.id === imageId)
+    || state.tasks.some((task) =>
+      task.maskImageId === imageId
+      || task.inputImageIds.includes(imageId)
+      || task.outputImages.includes(imageId),
+    )
+  if (referenced) return false
+  await deleteImage(imageId)
+  deleteImageCacheEntry(imageId)
+  return true
+}
+
+export async function addImageFromFile(file: File): Promise<void> {
+  const image = await createInputImageFromFile(file)
+  if (image) useStore.getState().addInputImage(image)
 }
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */

@@ -95,6 +95,33 @@ describe('mask draft lifecycle in store actions', () => {
 
     expect(useStore.getState().maskDraft).toBeNull()
   })
+
+  it('replaces a reference image without clearing an unrelated mask', () => {
+    const reference = { id: 'reference', dataUrl: 'data:image/png;base64,reference' }
+    const replacement = { id: 'replacement', dataUrl: 'data:image/png;base64,replacement' }
+    const maskDraft = { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 }
+    useStore.setState({ inputImages: [imageA, reference], maskDraft })
+
+    useStore.getState().replaceInputImage(1, replacement)
+
+    expect(useStore.getState().inputImages).toEqual([imageA, replacement])
+    expect(useStore.getState().maskDraft).toEqual(maskDraft)
+  })
+
+  it('clears the mask when replacing its target image', () => {
+    const replacement = { id: 'replacement', dataUrl: 'data:image/png;base64,replacement' }
+    useStore.setState({
+      inputImages: [imageA],
+      maskDraft: { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: imageA.id,
+    })
+
+    useStore.getState().replaceInputImage(0, replacement)
+
+    expect(useStore.getState().inputImages).toEqual([replacement])
+    expect(useStore.getState().maskDraft).toBeNull()
+    expect(useStore.getState().maskEditorImageId).toBeNull()
+  })
 })
 
 describe('interrupted OpenAI running tasks', () => {

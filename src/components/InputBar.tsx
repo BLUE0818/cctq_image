@@ -187,7 +187,6 @@ export default function InputBar() {
 
   const maskDraft = useStore((s) => s.maskDraft)
   const clearMaskDraft = useStore((s) => s.clearMaskDraft)
-  const setMaskEditorImageId = useStore((s) => s.setMaskEditorImageId)
   const moveInputImage = useStore((s) => s.moveInputImage)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -229,7 +228,6 @@ export default function InputBar() {
   const isUserInputRef = useRef(false)
   const [cursorPos, setCursorPos] = useState(0)
   const [menuLeft, setMenuLeft] = useState(0)
-  const maskConflictNoticeShownRef = useRef(false)
   const showPromptExpand = promptExpanded || promptCanExpand
   const compressionHintTimerRef = useRef<number | null>(null)
   const moderationHintTimerRef = useRef<number | null>(null)
@@ -994,7 +992,6 @@ export default function InputBar() {
 
   const renderImageThumb = (img: (typeof inputImages)[number], idx: number) => {
     const isMaskTarget = maskDraft?.targetImageId === img.id
-    const canEdit = !maskTargetImage || isMaskTarget
     const imageHintText = isMaskTarget
       ? '遮罩图必须为第一张图'
       : maskTargetImage
@@ -1142,14 +1139,6 @@ export default function InputBar() {
           }`}
           onClick={() => {
             if (suppressImageClickRef.current) return
-            if (isMaskTarget) {
-              setMaskEditorImageId(img.id)
-              return
-            }
-            if (isMobile && maskTargetImage && !maskConflictNoticeShownRef.current) {
-              maskConflictNoticeShownRef.current = true
-              showToast('只能有一张遮罩图', 'info')
-            }
             setLightboxImageId(img.id, inputImages.map((i) => i.id))
           }}
         >
@@ -1170,20 +1159,20 @@ export default function InputBar() {
           <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1.5 py-0.5 text-[8px] font-semibold leading-none text-white backdrop-blur-sm z-10 pointer-events-none">
             图{idx + 1}
           </span>
-          {canEdit && (
-            <button 
-              className="absolute inset-0 w-full h-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer z-20 focus:outline-none border-none"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMaskEditorImageId(img.id)
-              }}
-              title={isMaskTarget ? "编辑遮罩" : "添加遮罩"}
-            >
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-              </svg>
-            </button>
-          )}
+          <button
+            className="absolute inset-0 w-full h-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer z-20 focus:outline-none border-none"
+            onClick={(e) => {
+              e.stopPropagation()
+              setLightboxImageId(img.id, inputImages.map((i) => i.id))
+            }}
+            title="查看"
+            aria-label="查看参考图"
+          >
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 12s3.5-6 9.75-6 9.75 6 9.75 6-3.5 6-9.75 6S2.25 12 2.25 12z" />
+              <circle cx="12" cy="12" r="2.75" strokeWidth={2} />
+            </svg>
+          </button>
           {!isMaskTarget && (
             <span
               className="absolute right-0 top-0 flex h-5 w-5 translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full bg-red-500 text-white opacity-0 shadow-md transition-opacity hover:bg-red-600 group-hover:opacity-100 z-30"

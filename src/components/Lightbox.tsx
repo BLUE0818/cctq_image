@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useStore } from '../store'
+import { createInputImageFromFile, deleteImageIfUnreferenced, useStore } from '../store'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
+import { EditIcon, RefreshIcon } from './icons'
 
 const MIN_SCALE = 1
 const MAX_SCALE = 10
@@ -25,6 +26,12 @@ export default function Lightbox() {
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
   const maskDraft = useStore((s) => s.maskDraft)
   const tasks = useStore((s) => s.tasks)
+  const inputImages = useStore((s) => s.inputImages)
+  const replaceInputImage = useStore((s) => s.replaceInputImage)
+  const setMaskEditorImageId = useStore((s) => s.setMaskEditorImageId)
+  const showToast = useStore((s) => s.showToast)
+  const replaceFileInputRef = useRef<HTMLInputElement>(null)
+  const replaceImageTargetRef = useRef<string | null>(null)
 
   const [src, setSrc] = useState('')
   const [maskImageSrc, setMaskImageSrc] = useState('')
@@ -131,6 +138,64 @@ export default function Lightbox() {
   const goPrev = useCallback(() => { if (showNav) goTo(currentIndex - 1) }, [showNav, currentIndex, goTo])
   const goNext = useCallback(() => { if (showNav) goTo(currentIndex + 1) }, [showNav, currentIndex, goTo])
 
+  const isInputImage = Boolean(lightboxImageId && inputImages.some((image) => image.id === lightboxImageId))
+  const editDisabled = Boolean(maskDraft && maskDraft.targetImageId !== lightboxImageId)
+  const editLabel = maskDraft?.targetImageId === lightboxImageId ? '编辑遮罩' : '添加遮罩'
+
+  const openReplaceFilePicker = useCallback(() => {
+    if (!lightboxImageId || !isInputImage) return
+    replaceImageTargetRef.current = lightboxImageId
+    replaceFileInputRef.current?.click()
+  }, [isInputImage, lightboxImageId])
+
+  const handleReplaceFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    const targetId = replaceImageTargetRef.current
+    replaceImageTargetRef.current = null
+    if (!file || !targetId) return
+
+    try {
+      const image = await createInputImageFromFile(file)
+      if (!image) {
+        showToast('请选择有效图片', 'error')
+        return
+      }
+
+      const currentImages = useStore.getState().inputImages
+      const targetIdx = currentImages.findIndex((item) => item.id === targetId)
+      if (targetIdx < 0) {
+        await deleteImageIfUnreferenced(image.id)
+        showToast('原参考图已不存在', 'error')
+        return
+      }
+      if (targetId === image.id) {
+        showToast('参考图未变化', 'info')
+        return
+      }
+      if (currentImages.some((item, idx) => idx !== targetIdx && item.id === image.id)) {
+        showToast('这张图片已在参考图中', 'info')
+        return
+      }
+
+      replaceInputImage(targetIdx, image)
+      setLightboxImageId(
+        image.id,
+        lightboxImageList.map((id) => id === targetId ? image.id : id),
+      )
+      showToast('参考图已替换', 'success')
+    } catch (err) {
+      showToast(`参考图替换失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
+  }, [lightboxImageList, replaceInputImage, setLightboxImageId, showToast])
+
+  const editInputImage = useCallback(() => {
+    if (!lightboxImageId || !isInputImage || editDisabled) return
+    const imageId = lightboxImageId
+    close()
+    setMaskEditorImageId(imageId)
+  }, [close, editDisabled, isInputImage, lightboxImageId, setMaskEditorImageId])
+
   // 键盘左右切换
   useEffect(() => {
     if (!lightboxImageId || !showNav) return
@@ -145,17 +210,31 @@ export default function Lightbox() {
   if (!lightboxImageId || !src) return null
 
   return (
-    <LightboxInner
-      src={src}
-      imageId={lightboxImageId}
-      maskPreviewSrc={maskPreviewSrc}
-      onClose={close}
-      showNav={showNav}
-      currentIndex={currentIndex}
-      total={total}
-      onPrev={goPrev}
-      onNext={goNext}
-    />
+    <>
+      <LightboxInner
+        src={src}
+        imageId={lightboxImageId}
+        maskPreviewSrc={maskPreviewSrc}
+        onClose={close}
+        showNav={showNav}
+        currentIndex={currentIndex}
+        total={total}
+        onPrev={goPrev}
+        onNext={goNext}
+        showInputActions={isInputImage}
+        editDisabled={editDisabled}
+        editLabel={editLabel}
+        onReplace={openReplaceFilePicker}
+        onEdit={editInputImage}
+      />
+      <input
+        ref={replaceFileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleReplaceFileUpload}
+      />
+    </>
   )
 }
 
@@ -169,10 +248,15 @@ interface LightboxInnerProps {
   total: number
   onPrev: () => void
   onNext: () => void
+  showInputActions: boolean
+  editDisabled: boolean
+  editLabel: string
+  onReplace: () => void
+  onEdit: () => void
 }
 
 /** 内部组件：保证挂载时 DOM 已经存在，所有 ref / effect 都可靠 */
-function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext }: LightboxInnerProps) {
+function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext, showInputActions, editDisabled, editLabel, onReplace, onEdit }: LightboxInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   // 用 ref 追踪最新变换，避免闭包过期
@@ -604,7 +688,7 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
           <img
             src={src}
             data-image-id={imageId}
-            className="saveable-image max-w-[85vw] max-h-[85vh] object-contain rounded-lg shadow-2xl"
+            className="saveable-image max-w-[90vw] max-h-[70vh] sm:max-w-[85vw] sm:max-h-[75vh] object-contain rounded-lg shadow-2xl"
             onDragStart={(e) => e.preventDefault()}
             alt=""
           />
@@ -640,7 +724,33 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
         </>
       )}
 
-      {/* 底部指示器 */}
+      {showInputActions && !isZoomed && (
+        <div
+          className="absolute bottom-7 left-1/2 z-10 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl border border-white/15 bg-black/60 p-2 text-white backdrop-blur-xl shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="flex min-h-10 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-medium transition hover:bg-white/15 active:scale-95"
+            onClick={onReplace}
+          >
+            <RefreshIcon className="h-4 w-4" />
+            <span>替换图片</span>
+          </button>
+          <button
+            type="button"
+            disabled={editDisabled}
+            title={editDisabled ? '只能有一张遮罩图' : editLabel}
+            className="flex min-h-10 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-blue-500 px-4 text-sm font-medium transition hover:bg-blue-600 active:scale-95 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+            onClick={onEdit}
+          >
+            <EditIcon className="h-4 w-4" />
+            <span>{editLabel}</span>
+          </button>
+        </div>
+      )}
+
+      {/* 指示器 */}
       {showZoomBadge && isZoomed && zoomPercent !== 100 && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none">
           <span className="px-3 py-1.5 bg-black/50 text-white/80 text-xs rounded-full backdrop-blur-sm transition-opacity duration-500">
@@ -649,7 +759,7 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
         </div>
       )}
       {showNav && !isZoomed && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none">
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 pointer-events-none">
           <span className="px-3 py-1.5 bg-black/50 text-white/80 text-xs rounded-full backdrop-blur-sm">
             {currentIndex + 1} / {total}
           </span>
