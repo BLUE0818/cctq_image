@@ -65,7 +65,7 @@
 | 48 | [`0104f81`](https://github.com/CookSleep/gpt_image_playground/commit/0104f81) | 2026-07-17 | 按规则排除 | 修复上游 Vercel 同步 Release 后的自动部署；当前项目不使用该工作流。 | 已审核：按建议排除 |
 | 49 | [`ae8de0f`](https://github.com/CookSleep/gpt_image_playground/commit/ae8de0f) | 2026-07-19 | 按规则排除 | 仅更新 README。 | 已审核：按建议排除 |
 | 50 | [`ca5fec9`](https://github.com/CookSleep/gpt_image_playground/commit/ca5fec9) | 2026-07-21 | 可审核 | 参考图点击统一进入大图预览，并在预览中替换图片或进入遮罩编辑；移除旧编辑偏好。需适配本地 `InputBar`、`Lightbox` 和精简设置结构。 |  |
-| 51 | [`971e444`](https://github.com/CookSleep/gpt_image_playground/commit/971e444) | 2026-07-21 | 可审核 | 支持一次选择多份普通 ZIP 备份并合并导入，同时保持分片备份完整性校验。当前项目已有 v0.7.0 分片基础，可按本地备份格式移植并补测试。 |  |
+| 51 | [`971e444`](https://github.com/CookSleep/gpt_image_playground/commit/971e444) | 2026-07-21 | 可审核 | 支持一次选择多份普通 ZIP 备份并合并导入，同时保持分片备份完整性校验。当前项目已有 v0.7.0 分片基础，可按本地备份格式移植并补测试。 | 已合入：允许多个普通备份一次导入，任务与图片按既有主键语义合并，配置逐份使用现有等价规则去重；分片混选、重复和缺片校验保持不变。新增 2 项测试，全量 109 项测试及构建通过。 |
 | 52 | [`34041c9`](https://github.com/CookSleep/gpt_image_playground/commit/34041c9) | 2026-07-21 | 部分可审核 | 优化遮罩编辑器顶部操作区、深色模式和笔刷大小滑杆整区点击/拖动；其中 ZIP 子弹窗的一行样式需随第 5 条决定。 |  |
 | 53 | [`01c4e93`](https://github.com/CookSleep/gpt_image_playground/commit/01c4e93) | 2026-07-23 | 按规则排除 | 将新建或切换 Responses API 配置时的默认模型更新为 `gpt-5.6-sol`。 | 已审核：按建议排除 |
 | 54 | [`95392f5`](https://github.com/CookSleep/gpt_image_playground/commit/95392f5) | 2026-07-23 | 条件性审核 | 发布 v0.7.1，更新版本号和 Release 文档。只能在选定功能、重构和测试完成后更新当前项目版本；上游 Release 文档不合入。 |  |

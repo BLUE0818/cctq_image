@@ -1415,13 +1415,11 @@ export async function importData(input: File | File[], options: ImportOptions = 
         throw new Error(`分片备份不完整，请一次选择同一备份的全部 ${first.total} 个 ZIP。`)
       }
       selected.sort((left, right) => left.manifest.backupPart!.index - right.manifest.backupPart!.index)
-    } else if (selected.length > 1) {
-      throw new Error('多个普通备份不能同时导入，请每次选择一个 ZIP。')
     }
 
-    const data = selected.find((part) => part.manifest.settings)?.manifest ?? selected[0].manifest
-    if (options.importConfig && !options.importTasks && !data.settings) {
-      throw new Error('所选分片不包含配置数据。')
+    const settingsManifests = selected.filter((part) => part.manifest.settings)
+    if (options.importConfig && !options.importTasks && !settingsManifests.length) {
+      throw new Error('所选备份不包含配置数据。')
     }
     const importedTasks = selected.flatMap((part) => part.manifest.tasks ?? [])
     const hasTaskData = selected.some((part) => part.manifest.tasks != null || part.manifest.imageFiles != null)
@@ -1473,15 +1471,19 @@ export async function importData(input: File | File[], options: ImportOptions = 
       scheduleThumbnailBackfill(importedImageIds)
     }
 
-    if (options.importConfig && data.settings) {
+    if (options.importConfig && settingsManifests.length) {
       const state = useStore.getState()
-      state.setSettings(mergeImportedSettings(state.settings, data.settings))
+      const settings = settingsManifests.reduce(
+        (current, part) => mergeImportedSettings(current, part.manifest.settings),
+        state.settings,
+      )
+      state.setSettings(settings)
     }
 
     let msg = '数据已成功导入'
     if (options.importTasks && hasTaskData) {
       msg = `已导入 ${importedTasks.length} 条记录`
-    } else if (options.importConfig && data.settings) {
+    } else if (options.importConfig && settingsManifests.length) {
       msg = '配置已成功导入'
     }
 

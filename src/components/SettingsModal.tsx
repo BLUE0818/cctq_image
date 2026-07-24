@@ -1112,7 +1112,7 @@ export default function SettingsModal() {
                     <ImportIcon className="w-4 h-4 text-gray-700 dark:text-gray-300" />
                     <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导入数据</h4>
                   </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">分片备份需一次选中同一批次的全部 ZIP</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">支持一次导入多个普通备份；分片备份需一次选中同一批次的全部 ZIP</p>
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <Checkbox checked={importConfig} onChange={setImportConfig} label="包含配置" />
                     <Checkbox checked={importTasks} onChange={setImportTasks} label="包含任务和图片" />

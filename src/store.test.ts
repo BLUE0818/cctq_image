@@ -391,6 +391,47 @@ describe('multipart data import', () => {
     expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.id)).toEqual(['multipart-task-a', 'multipart-task-b'])
   })
 
+  it('imports multiple regular backups together', async () => {
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      tasks: [task({ id: 'regular-task-a' })],
+      imageFiles: {},
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      tasks: [task({ id: 'regular-task-b' })],
+      imageFiles: {},
+    })
+
+    await expect(importData([backupA, backupB], { importConfig: false, importTasks: true })).resolves.toBe(true)
+    expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.id)).toEqual(['regular-task-a', 'regular-task-b'])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('已导入 2 条记录', 'success')
+  })
+
+  it('merges and deduplicates settings from multiple regular backups', async () => {
+    useStore.setState({ settings: normalizeSettings(DEFAULT_SETTINGS) })
+    const shared = createDefaultOpenAIProfile({ id: 'shared', name: '共享', apiKey: 'shared-key' })
+    const profileA = createDefaultOpenAIProfile({ id: 'profile-a', name: '配置 A', apiKey: 'key-a' })
+    const profileB = createDefaultOpenAIProfile({ id: 'profile-b', name: '配置 B', apiKey: 'key-b' })
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [shared, profileA], activeProfileId: profileA.id }),
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [shared, profileB], activeProfileId: profileB.id }),
+    })
+
+    await expect(importData([backupA, backupB], { importConfig: true, importTasks: false })).resolves.toBe(true)
+    const apiKeys = useStore.getState().settings.profiles.map((profile) => profile.apiKey)
+    expect(apiKeys).toEqual(expect.arrayContaining(['shared-key', 'key-a', 'key-b']))
+    expect(apiKeys.filter((apiKey) => apiKey === 'shared-key')).toHaveLength(1)
+  })
+
   it('rejects an incomplete multipart backup before writing data', async () => {
     const part1 = importFile({
       version: 3,
