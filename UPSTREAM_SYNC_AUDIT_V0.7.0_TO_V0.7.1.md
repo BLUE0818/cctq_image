@@ -27,17 +27,17 @@
 | 10 | [`45e4f1a`](https://github.com/CookSleep/gpt_image_playground/commit/45e4f1a) | 2026-07-14 | 不单独移植 | 将图片缓存模块分支合并回主线；对应内容由第 4 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
 | 11 | [`ba151a8`](https://github.com/CookSleep/gpt_image_playground/commit/ba151a8) | 2026-07-14 | 按规则排除 | 提取 Agent 对话分支、轮次、消息路径和搜索文本等状态逻辑。 | 已审核：按建议排除 |
 | 12 | [`d750f5c`](https://github.com/CookSleep/gpt_image_playground/commit/d750f5c) | 2026-07-14 | 不单独移植 | 将 Agent 对话状态分支合并回主线；对应内容已按第 11 条排除。 | 已审核：仅作合并来源记录，不单独移植 |
-| 13 | [`5fa5651`](https://github.com/CookSleep/gpt_image_playground/commit/5fa5651) | 2026-07-14 | 部分可审核 | 统一任务、Agent 轮次和关联图片的删除流程，并补异步测试。当前项目只可重写画廊任务及图片清理部分。 |  |
-| 14 | [`2062936`](https://github.com/CookSleep/gpt_image_playground/commit/2062936) | 2026-07-14 | 部分可审核 | 修复删除任务期间状态变化造成的竞争条件。应按当前 Images API 与自定义异步任务模型重新实现并补并发测试。 |  |
-| 15 | [`9beb089`](https://github.com/CookSleep/gpt_image_playground/commit/9beb089) | 2026-07-14 | 部分可审核 | 完善删除后任务、图片及持久化数据清理。只保留当前项目真实存在的数据关系。 |  |
+| 13 | [`5fa5651`](https://github.com/CookSleep/gpt_image_playground/commit/5fa5651) | 2026-07-14 | 部分可审核 | 统一任务、Agent 轮次和关联图片的删除流程，并补异步测试。当前项目只可重写画廊任务及图片清理部分。 | 已合入本地画廊部分：单删/批删统一走 `removeTasks`，同步清理选择、详情、孤立图片、缓存及 Lightbox；Agent 轮次不适用。 |
+| 14 | [`2062936`](https://github.com/CookSleep/gpt_image_playground/commit/2062936) | 2026-07-14 | 部分可审核 | 修复删除任务期间状态变化造成的竞争条件。应按当前 Images API 与自定义异步任务模型重新实现并补并发测试。 | 已合入：删除先以函数式状态更新移除目标，持久化等待期间的新建/更新任务不会被旧快照覆盖；Images API 与自定义恢复的迟到输出会回收，不会复活已删任务。 |
+| 15 | [`9beb089`](https://github.com/CookSleep/gpt_image_playground/commit/9beb089) | 2026-07-14 | 部分可审核 | 完善删除后任务、图片及持久化数据清理。只保留当前项目真实存在的数据关系。 | 已合入：删除时停止 FAL、自定义异步及 OpenAI 看门狗计时器；图片清理按最新引用复查，检查/删除窗口新增引用时恢复原图和缩略图。 |
 | 16 | [`26d53c8`](https://github.com/CookSleep/gpt_image_playground/commit/26d53c8) | 2026-07-14 | 不单独移植 | 将统一删除流程分支合并回主线；对应内容由第 13～15 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
 | 17 | [`ae9e6d6`](https://github.com/CookSleep/gpt_image_playground/commit/ae9e6d6) | 2026-07-14 | 部分可审核 | 简化设置弹窗局部状态及子弹窗交互。可用于本地 `SettingsModal` 拆分，但需保留当前自定义服务商和即时保存行为。 | 已合入：父组件继续持有草稿、校验与即时保存，子弹窗仅接收状态和回调；`SettingsModal.tsx` 减少约 224 行。 |
 | 18 | [`8b12005`](https://github.com/CookSleep/gpt_image_playground/commit/8b12005) | 2026-07-14 | 谨慎审核 | 收紧提及标签的选区、光标边界和异常 DOM 处理，并扩充测试。应在第 3 条完成后按本地交互逐项验证。 | 已审核并按本地模型吸收：光标落入提及 tag 时吸附到边界，提及原文通过 `data-mention-text` 保留，HTML 内容与属性均转义；上游文本提及、跨输入框选区与 Agent 分支不适用，未引入 `jsdom` 依赖。 |
 | 19 | [`a17a381`](https://github.com/CookSleep/gpt_image_playground/commit/a17a381) | 2026-07-14 | 部分可审核 | 简化 SSE 与图片缓存工具并增加测试。可跟随第 2、4 条吸收，但不得引入 Agent API。 | 已审核：图片缓存最终版及测试已随第 4 条合入；SSE 因本地 Images API 非流式而不适用，不引入 Agent API。 |
 | 20 | [`b78fe14`](https://github.com/CookSleep/gpt_image_playground/commit/b78fe14) | 2026-07-14 | 按规则排除 | 收紧 Agent 对话及输出状态辅助函数。 | 已审核：按建议排除 |
-| 21 | [`14353a2`](https://github.com/CookSleep/gpt_image_playground/commit/14353a2) | 2026-07-14 | 部分可审核 | 通过 IndexedDB 事务加强任务删除一致性，并同步处理 Agent 对话。当前项目可借鉴事务设计，但必须按本地任务和图片表重写。 |  |
+| 21 | [`14353a2`](https://github.com/CookSleep/gpt_image_playground/commit/14353a2) | 2026-07-14 | 部分可审核 | 通过 IndexedDB 事务加强任务删除一致性，并同步处理 Agent 对话。当前项目可借鉴事务设计，但必须按本地任务和图片表重写。 | 已合入本地精简版：`commitTaskDeletion` 在单个 IndexedDB `tasks` 事务中删除去重后的目标 ID，事务失败时回退逐项删除；本地无 Agent 对话表。 |
 | 22 | [`b312be9`](https://github.com/CookSleep/gpt_image_playground/commit/b312be9) | 2026-07-14 | 按规则排除 | 保持 Agent 批量工具中已删除图片占位块的输出顺序。 | 已审核：按建议排除 |
-| 23 | [`56aa47e`](https://github.com/CookSleep/gpt_image_playground/commit/56aa47e) | 2026-07-14 | 部分可审核 | 让批量删除及清理流程可重复执行，并扩充数据库与状态测试；Agent 批次身份部分排除，通用幂等设计可用于本地。 |  |
+| 23 | [`56aa47e`](https://github.com/CookSleep/gpt_image_playground/commit/56aa47e) | 2026-07-14 | 部分可审核 | 让批量删除及清理流程可重复执行，并扩充数据库与状态测试；Agent 批次身份部分排除，通用幂等设计可用于本地。 | 已合入通用幂等设计：重复 ID 去重、不存在 ID 不计数且不显示成功提示；孤图删除与缓存/UI 清理可重复执行，Agent 批次身份不适用。 |
 | 24 | [`31a65a7`](https://github.com/CookSleep/gpt_image_playground/commit/31a65a7) | 2026-07-14 | 按规则排除 | 仅更新 README，涉及上游项目说明及外部内容。 | 已审核：按建议排除 |
 | 25 | [`81a5df4`](https://github.com/CookSleep/gpt_image_playground/commit/81a5df4) | 2026-07-14 | 按规则排除 | 仅更新 README。 | 已审核：按建议排除 |
 | 26 | [`03ab6bb`](https://github.com/CookSleep/gpt_image_playground/commit/03ab6bb) | 2026-07-14 | 按规则排除 | 规范 Agent 批量工具调用中的项目身份，涉及 `agentApi` 和 Agent 批次状态。 | 已审核：按建议排除 |
@@ -47,8 +47,8 @@
 | 30 | [`cb99e89`](https://github.com/CookSleep/gpt_image_playground/commit/cb99e89) | 2026-07-14 | 不单独移植 | 将流解析和缓存工具简化分支合并回主线；对应内容由第 19 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
 | 31 | [`9178a98`](https://github.com/CookSleep/gpt_image_playground/commit/9178a98) | 2026-07-14 | 不单独移植 | 将 Agent 状态辅助函数分支合并回主线；已按第 20 条排除。 | 已审核：仅作合并来源记录，不单独移植 |
 | 32 | [`a213271`](https://github.com/CookSleep/gpt_image_playground/commit/a213271) | 2026-07-14 | 不单独移植 | 将任务删除一致性分支合并回主线；对应内容由第 21、23 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
-| 33 | [`22084f8`](https://github.com/CookSleep/gpt_image_playground/commit/22084f8) | 2026-07-14 | 部分可审核 | 重构 Store 异步测试的隔离方式。可借鉴测试结构，但只能覆盖当前项目保留的画廊和自定义服务商状态。 |  |
-| 34 | [`ca3701a`](https://github.com/CookSleep/gpt_image_playground/commit/ca3701a) | 2026-07-14 | 部分可审核 | 增加删除事务交错执行测试。仅在实施第 13～15、21、23 条时按本地数据模型重写。 |  |
+| 33 | [`22084f8`](https://github.com/CookSleep/gpt_image_playground/commit/22084f8) | 2026-07-14 | 部分可审核 | 重构 Store 异步测试的隔离方式。可借鉴测试结构，但只能覆盖当前项目保留的画廊和自定义服务商状态。 | 已按现有本地隔离框架吸收：扩展 DB/API mock 与可控 Promise，覆盖画廊任务删除和 Images API 异步状态；未引入 Agent 测试结构或新测试依赖。 |
+| 34 | [`ca3701a`](https://github.com/CookSleep/gpt_image_playground/commit/ca3701a) | 2026-07-14 | 部分可审核 | 增加删除事务交错执行测试。仅在实施第 13～15、21、23 条时按本地数据模型重写。 | 已合入本地交错测试：覆盖事务等待期间状态新增/更新、输出落库期间删除、图片检查/删除窗口新增引用。删除组共新增 6 项测试，全量 121 项及构建通过。 |
 | 35 | [`3a604f0`](https://github.com/CookSleep/gpt_image_playground/commit/3a604f0) | 2026-07-14 | 不单独移植 | 将 Store 异步测试隔离分支合并回主线；对应内容由第 33、34 条审核。 | 已审核：仅作合并来源记录，不单独移植 |
 | 36 | [`9c0466a`](https://github.com/CookSleep/gpt_image_playground/commit/9c0466a) | 2026-07-15 | 按规则排除 | 删除 Agent 输出透传逻辑。 | 已审核：按建议排除 |
 | 37 | [`6d5cd2d`](https://github.com/CookSleep/gpt_image_playground/commit/6d5cd2d) | 2026-07-15 | 按规则排除 | 提取 Agent Responses 输出和运行状态模块及测试。 | 已审核：按建议排除 |

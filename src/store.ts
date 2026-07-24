@@ -16,8 +16,10 @@ import {
   getAllTasks,
   putTask,
   deleteTask as dbDeleteTask,
+  commitTaskDeletion,
   clearTasks as dbClearTasks,
   getImage,
+  getStoredImageThumbnail,
   getImageThumbnail,
   getAllImageIds,
   getAllImages,
@@ -553,6 +555,7 @@ function clearFalRecoveryTimer(taskId: string) {
 
 function scheduleFalRecovery(taskId: string, delayMs = FAL_RECOVERY_POLL_MS) {
   if (falRecoveryTimers.has(taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
   const timer = setTimeout(() => {
     falRecoveryTimers.delete(taskId)
   }, delayMs)
@@ -567,6 +570,7 @@ function clearCustomRecoveryTimer(taskId: string) {
 
 function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_MS) {
   if (customRecoveryTimers.has(taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
   const timer = setTimeout(() => {
     customRecoveryTimers.delete(taskId)
     recoverCustomTask(taskId)
@@ -906,7 +910,10 @@ async function executeTask(taskId: string) {
 
     // 更新任务
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') return
+    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
+      await deleteUnreferencedImageIds(outputIds)
+      return
+    }
     clearOpenAIWatchdogTimer(taskId)
     const now = Date.now()
     updateTaskInStore(taskId, {
@@ -936,8 +943,8 @@ async function executeTask(taskId: string) {
     }
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
-    const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
-    if (latestTask.status !== 'running') return
+    const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
+    if (!latestTask || latestTask.status !== 'running') return
     const latestFalRequestInfo = falRequestInfo ?? (latestTask.falRequestId && latestTask.falEndpoint
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
@@ -1104,54 +1111,97 @@ export async function editOutputs(task: TaskRecord) {
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
 }
 
+function addTaskImageIds(target: Set<string>, task: TaskRecord) {
+  for (const id of task.inputImageIds || []) target.add(id)
+  if (task.maskImageId) target.add(task.maskImageId)
+  for (const id of task.outputImages || []) target.add(id)
+}
+
+function isImageReferencedByState(state: AppState, imageId: string) {
+  return state.inputImages.some((image) => image.id === imageId)
+    || state.tasks.some((task) =>
+      task.maskImageId === imageId
+      || task.inputImageIds.includes(imageId)
+      || task.outputImages.includes(imageId),
+    )
+}
+
+async function deleteStoredImageIfUnreferenced(imageId: string): Promise<boolean> {
+  if (isImageReferencedByState(useStore.getState(), imageId)) return false
+  const [image, thumbnail] = await Promise.all([getImage(imageId), getStoredImageThumbnail(imageId)])
+  if (isImageReferencedByState(useStore.getState(), imageId)) return false
+
+  await deleteImage(imageId)
+  if (!isImageReferencedByState(useStore.getState(), imageId)) {
+    deleteImageCacheEntry(imageId)
+    useStore.setState((state) => {
+      const lightboxImageList = state.lightboxImageList.filter((id) => id !== imageId)
+      return {
+        lightboxImageList,
+        lightboxImageId: state.lightboxImageId === imageId ? lightboxImageList[0] ?? null : state.lightboxImageId,
+      }
+    })
+    return true
+  }
+
+  if (image) {
+    await putImage(image)
+    cacheImage(image.id, image.dataUrl)
+  }
+  if (thumbnail) {
+    await putImageThumbnail(thumbnail)
+    cacheThumbnail(thumbnail.id, {
+      dataUrl: thumbnail.thumbnailDataUrl,
+      width: thumbnail.width,
+      height: thumbnail.height,
+      thumbnailVersion: thumbnail.thumbnailVersion,
+    })
+  }
+  return false
+}
+
+async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
+  for (const imageId of new Set(imageIds)) await deleteStoredImageIfUnreferenced(imageId)
+}
+
+async function removeTasks(taskIds: string[]) {
+  const toDelete = new Set(taskIds)
+  let deletedTasks: TaskRecord[] = []
+
+  useStore.setState((state) => {
+    deletedTasks = state.tasks.filter((task) => toDelete.has(task.id))
+    return {
+      tasks: state.tasks.filter((task) => !toDelete.has(task.id)),
+      selectedTaskIds: state.selectedTaskIds.filter((id) => !toDelete.has(id)),
+      detailTaskId: state.detailTaskId && toDelete.has(state.detailTaskId) ? null : state.detailTaskId,
+    }
+  })
+  if (!deletedTasks.length) return 0
+
+  const imageIds = new Set<string>()
+  for (const task of deletedTasks) {
+    addTaskImageIds(imageIds, task)
+    clearFalRecoveryTimer(task.id)
+    clearCustomRecoveryTimer(task.id)
+    clearOpenAIWatchdogTimer(task.id)
+  }
+
+  try {
+    await commitTaskDeletion(deletedTasks.map((task) => task.id))
+  } catch (error) {
+    console.warn('原子删除任务失败，改用逐项删除', error)
+    await Promise.all(deletedTasks.map((task) => dbDeleteTask(task.id)))
+  }
+  await deleteUnreferencedImageIds(imageIds)
+  return deletedTasks.length
+}
+
 /** 删除多条任务 */
 export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, showToast, clearSelection, selectedTaskIds } = useStore.getState()
-  
   if (!taskIds.length) return
-
-  const toDelete = new Set(taskIds)
-  const remaining = tasks.filter(t => !toDelete.has(t.id))
-
-  // 收集所有被删除任务的关联图片
-  const deletedImageIds = new Set<string>()
-  for (const t of tasks) {
-    if (toDelete.has(t.id)) {
-      for (const id of t.inputImageIds || []) deletedImageIds.add(id)
-      if (t.maskImageId) deletedImageIds.add(t.maskImageId)
-      for (const id of t.outputImages || []) deletedImageIds.add(id)
-    }
-  }
-
-  setTasks(remaining)
-  for (const id of taskIds) {
-    await dbDeleteTask(id)
-  }
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    for (const id of t.inputImageIds || []) stillUsed.add(id)
-    if (t.maskImageId) stillUsed.add(t.maskImageId)
-    for (const id of t.outputImages || []) stillUsed.add(id)
-  }
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of deletedImageIds) {
-      if (!stillUsed.has(imgId)) {
-        await deleteImage(imgId)
-        deleteImageCacheEntry(imgId)
-      }
-  }
-
-  // 如果删除的任务在选中列表中，则移除
-  const newSelection = selectedTaskIds.filter(id => !toDelete.has(id))
-  if (newSelection.length !== selectedTaskIds.length) {
-    useStore.getState().setSelectedTaskIds(newSelection)
-  }
-
-  showToast(`已删除 ${taskIds.length} 条记录`, 'success')
+  const deletedCount = await removeTasks(taskIds)
+  if (!deletedCount) return
+  useStore.getState().showToast(`已删除 ${deletedCount} 条记录`, 'success')
 }
 
 /** 删除所有失败任务 */
@@ -1182,38 +1232,9 @@ export async function clearFailedTasks(taskIds?: string[]) {
 
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, showToast } = useStore.getState()
-
-  // 收集此任务关联的图片
-  const taskImageIds = new Set([
-    ...(task.inputImageIds || []),
-    ...(task.maskImageId ? [task.maskImageId] : []),
-    ...(task.outputImages || []),
-  ])
-
-  // 从列表移除
-  const remaining = tasks.filter((t) => t.id !== task.id)
-  setTasks(remaining)
-  await dbDeleteTask(task.id)
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    for (const id of t.inputImageIds || []) stillUsed.add(id)
-    if (t.maskImageId) stillUsed.add(t.maskImageId)
-    for (const id of t.outputImages || []) stillUsed.add(id)
-  }
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of taskImageIds) {
-      if (!stillUsed.has(imgId)) {
-        await deleteImage(imgId)
-        deleteImageCacheEntry(imgId)
-      }
-  }
-
-  showToast('记录已删除', 'success')
+  const deletedCount = await removeTasks([task.id])
+  if (!deletedCount) return
+  useStore.getState().showToast('记录已删除', 'success')
 }
 
 /** 清空数据选项 */
@@ -1255,6 +1276,11 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     cacheImage(imgId, dataUrl)
     outputIds.push(imgId)
   }
+  const latestBeforeUpdate = useStore.getState().tasks.find((item) => item.id === task.id)
+  if (!latestBeforeUpdate || latestBeforeUpdate.status === 'done') {
+    await deleteUnreferencedImageIds(outputIds)
+    return
+  }
 
   updateTaskInStore(task.id, {
     outputImages: outputIds,
@@ -1288,6 +1314,7 @@ async function recoverCustomTask(taskId: string) {
     await completeRecoveredCustomTask(task, result)
   } catch (err) {
     clearCustomRecoveryTimer(taskId)
+    if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
     updateTaskInStore(taskId, {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),
@@ -1520,17 +1547,7 @@ export async function createInputImageFromFile(file: File): Promise<InputImage |
 }
 
 export async function deleteImageIfUnreferenced(imageId: string): Promise<boolean> {
-  const state = useStore.getState()
-  const referenced = state.inputImages.some((image) => image.id === imageId)
-    || state.tasks.some((task) =>
-      task.maskImageId === imageId
-      || task.inputImageIds.includes(imageId)
-      || task.outputImages.includes(imageId),
-    )
-  if (referenced) return false
-  await deleteImage(imageId)
-  deleteImageCacheEntry(imageId)
-  return true
+  return deleteStoredImageIfUnreferenced(imageId)
 }
 
 export async function addImageFromFile(file: File): Promise<void> {

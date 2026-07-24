@@ -62,6 +62,20 @@ export function deleteTask(id: string): Promise<undefined> {
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.delete(id))
 }
 
+export function commitTaskDeletion(taskIds: string[]): Promise<undefined> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_TASKS, 'readwrite')
+        const store = tx.objectStore(STORE_TASKS)
+        for (const id of new Set(taskIds)) store.delete(id)
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
+}
+
 export function clearTasks(): Promise<undefined> {
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.clear())
 }
