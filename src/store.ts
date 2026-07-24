@@ -13,14 +13,12 @@ import { DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
-  CURRENT_THUMBNAIL_VERSION,
   getAllTasks,
   putTask,
   deleteTask as dbDeleteTask,
   clearTasks as dbClearTasks,
   getImage,
   getImageThumbnail,
-  getStoredFreshImageThumbnail,
   getAllImageIds,
   getAllImages,
   putImage,
@@ -47,19 +45,23 @@ import {
   readExportZipFileAsDataUrl,
   readExportZipManifest,
 } from './lib/exportZip'
+import {
+  cacheImage,
+  cacheThumbnail,
+  clearImageCaches,
+  deleteCachedImage,
+  deleteImageCacheEntry,
+  ensureImageCached,
+  scheduleThumbnailBackfill,
+} from './lib/imageCache'
 
-// ===== Image cache =====
-// 内存缓存，id → dataUrl。只保留少量最近使用图片，避免大量 4K data URL 常驻内存。
+export {
+  ensureImageCached,
+  ensureImageThumbnailCached,
+  getCachedImage,
+  subscribeImageThumbnail,
+} from './lib/imageCache'
 
-const imageCache = new Map<string, string>()
-const thumbnailCache = new Map<string, { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }>()
-const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
-const thumbnailBackfillRunningIds = new Set<string>()
-const thumbnailSubscribers = new Map<string, Set<(thumbnail: { dataUrl: string; width?: number; height?: number }) => void>>()
-let thumbnailBackfillScheduled = false
-const MAX_IMAGE_CACHE_ENTRIES = 8
-const MAX_THUMBNAIL_CACHE_ENTRIES = 80
-const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -69,196 +71,6 @@ const OPENAI_INTERRUPTED_ERROR = '请求中断'
 
 function createOpenAITimeoutError(timeoutSeconds: number) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
-}
-
-export function getCachedImage(id: string): string | undefined {
-  const dataUrl = imageCache.get(id)
-  if (dataUrl) {
-    imageCache.delete(id)
-    imageCache.set(id, dataUrl)
-  }
-  return dataUrl
-}
-
-function cacheImage(id: string, dataUrl: string) {
-  imageCache.delete(id)
-  imageCache.set(id, dataUrl)
-  while (imageCache.size > MAX_IMAGE_CACHE_ENTRIES) {
-    const oldestKey = imageCache.keys().next().value
-    if (oldestKey == null) break
-    imageCache.delete(oldestKey)
-  }
-}
-
-function getCachedThumbnail(id: string) {
-  const thumbnail = thumbnailCache.get(id)
-  if (thumbnail?.thumbnailVersion === CURRENT_THUMBNAIL_VERSION) {
-    thumbnailCache.delete(id)
-    thumbnailCache.set(id, thumbnail)
-    return thumbnail
-  }
-  if (thumbnail) {
-    thumbnailCache.delete(id)
-  }
-  return undefined
-}
-
-function cacheThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }) {
-  if (thumbnail.thumbnailVersion !== CURRENT_THUMBNAIL_VERSION) return
-  thumbnailCache.delete(id)
-  thumbnailCache.set(id, thumbnail)
-  while (thumbnailCache.size > MAX_THUMBNAIL_CACHE_ENTRIES) {
-    const oldestKey = thumbnailCache.keys().next().value
-    if (oldestKey == null) break
-    thumbnailCache.delete(oldestKey)
-  }
-}
-
-export async function ensureImageCached(id: string): Promise<string | undefined> {
-  const cached = getCachedImage(id)
-  if (cached) return cached
-  const rec = await getImage(id)
-  if (rec) {
-    cacheImage(id, rec.dataUrl)
-    return rec.dataUrl
-  }
-  return undefined
-}
-
-export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
-  const cached = getCachedThumbnail(id)
-  if (cached) return cached
-
-  const rec = await getStoredFreshImageThumbnail(id)
-  if (!rec?.thumbnailDataUrl) {
-    scheduleThumbnailBackfill([id], 'visible')
-    return undefined
-  }
-
-  const thumbnail = {
-    dataUrl: rec.thumbnailDataUrl,
-    width: rec.width,
-    height: rec.height,
-    thumbnailVersion: rec.thumbnailVersion,
-  }
-  cacheThumbnail(id, thumbnail)
-  return thumbnail
-}
-
-export function subscribeImageThumbnail(id: string, callback: (thumbnail: { dataUrl: string; width?: number; height?: number }) => void) {
-  let subscribers = thumbnailSubscribers.get(id)
-  if (!subscribers) {
-    subscribers = new Set()
-    thumbnailSubscribers.set(id, subscribers)
-  }
-  subscribers.add(callback)
-  return () => {
-    subscribers?.delete(callback)
-    if (subscribers?.size === 0) thumbnailSubscribers.delete(id)
-  }
-}
-
-function notifyImageThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number }) {
-  thumbnailSubscribers.get(id)?.forEach((callback) => callback(thumbnail))
-}
-
-function scheduleThumbnailBackfill(ids: Iterable<string>, priority: 'visible' | 'background' = 'background') {
-  for (const id of ids) {
-    if (getCachedThumbnail(id) || thumbnailBackfillRunningIds.has(id)) continue
-    const currentPriority = thumbnailBackfillIds.get(id)
-    if (!currentPriority || priority === 'visible') thumbnailBackfillIds.set(id, priority)
-  }
-  scheduleThumbnailBackfillTick()
-}
-
-function scheduleThumbnailBackfillTick() {
-  if (thumbnailBackfillScheduled || thumbnailBackfillIds.size === 0) return
-  thumbnailBackfillScheduled = true
-
-  const run = () => {
-    thumbnailBackfillScheduled = false
-    void processNextThumbnailBackfill()
-  }
-
-  if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(run, { timeout: 2_000 })
-  } else {
-    globalThis.setTimeout(run, 250)
-  }
-}
-
-async function processNextThumbnailBackfill() {
-  if (thumbnailBackfillRunningIds.size > 0) return
-
-  const ids = await getNextThumbnailBackfillBatch()
-  for (const id of ids) startThumbnailBackfill(id)
-
-  if (thumbnailBackfillIds.size > 0) scheduleThumbnailBackfillTick()
-}
-
-async function getNextThumbnailBackfillBatch() {
-  const candidates = getOrderedThumbnailBackfillIds().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
-  if (candidates.length === 0) return []
-
-  const sizes = await Promise.all(candidates.map(async (id) => {
-    const image = await getImage(id)
-    return { width: image?.width, height: image?.height }
-  }))
-  const concurrency = getThumbnailConcurrencyForBatch(sizes)
-  const selected = candidates.slice(0, concurrency)
-  for (const id of selected) thumbnailBackfillIds.delete(id)
-  return selected
-}
-
-function getOrderedThumbnailBackfillIds() {
-  const visible: string[] = []
-  const background: string[] = []
-  for (const [id, priority] of thumbnailBackfillIds) {
-    if (priority === 'visible') visible.push(id)
-    else background.push(id)
-  }
-  return [...visible, ...background]
-}
-
-function getThumbnailConcurrencyForBatch(sizes: Array<{ width?: number; height?: number }>) {
-  let maxMegapixels = 0
-  for (const { width, height } of sizes) {
-    if (!width || !height) return 1
-    maxMegapixels = Math.max(maxMegapixels, (width * height) / 1_000_000)
-  }
-  const megapixels = maxMegapixels
-  if (megapixels >= 8) return 1
-  if (megapixels >= 4) return 2
-  if (megapixels >= 2) return 3
-  return 4
-}
-
-function startThumbnailBackfill(id: string) {
-  thumbnailBackfillRunningIds.add(id)
-
-  void (async () => {
-    if (getCachedThumbnail(id)) return
-
-    const thumbnail = await getImageThumbnail(id)
-    if (thumbnail?.thumbnailDataUrl) {
-      cacheThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-        thumbnailVersion: thumbnail.thumbnailVersion,
-      })
-      notifyImageThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-      })
-    }
-  })().catch(() => {
-    // Keep thumbnail generation best-effort; cards remain on placeholders if it fails.
-  }).finally(() => {
-    thumbnailBackfillRunningIds.delete(id)
-    scheduleThumbnailBackfillTick()
-  })
 }
 
 function orderImagesWithMaskFirst(images: InputImage[], maskTargetImageId: string | null | undefined) {
@@ -447,7 +259,7 @@ export const useStore = create<AppState>()(
         }),
       clearInputImages: () =>
         set((s) => {
-          for (const img of s.inputImages) imageCache.delete(img.id)
+          for (const img of s.inputImages) deleteCachedImage(img.id)
           return { inputImages: [], maskDraft: null, maskEditorImageId: null }
         }),
       setInputImages: (imgs) =>
@@ -1189,7 +1001,7 @@ async function executeTask(taskId: string) {
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {
-      imageCache.delete(imgId)
+      deleteCachedImage(imgId)
     }
   }
 }
@@ -1352,11 +1164,10 @@ export async function removeMultipleTasks(taskIds: string[]) {
 
   // 删除孤立图片
   for (const imgId of deletedImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
+      if (!stillUsed.has(imgId)) {
+        await deleteImage(imgId)
+        deleteImageCacheEntry(imgId)
+      }
   }
 
   // 如果删除的任务在选中列表中，则移除
@@ -1421,11 +1232,10 @@ export async function removeTask(task: TaskRecord) {
 
   // 删除孤立图片
   for (const imgId of taskImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
+      if (!stillUsed.has(imgId)) {
+        await deleteImage(imgId)
+        deleteImageCacheEntry(imgId)
+      }
   }
 
   showToast('记录已删除', 'success')
@@ -1444,9 +1254,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   if (options.clearTasks) {
     await dbClearTasks()
     await clearImages()
-    imageCache.clear()
-    thumbnailCache.clear()
-    thumbnailBackfillIds.clear()
+    clearImageCaches()
     setTasks([])
     clearInputImages()
     clearMaskDraft()

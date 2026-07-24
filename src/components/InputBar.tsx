@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useStore, submitTask, addImageFromFile, updateTaskInStore, removeMultipleTasks, getCachedImage, ensureImageCached, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { useStore, submitTask, addImageFromFile, updateTaskInStore, removeMultipleTasks, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { DEFAULT_PARAMS } from '../types'
 import { getActiveApiProfile, normalizeSettings } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
