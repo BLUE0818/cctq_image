@@ -54,6 +54,15 @@ import {
   ensureImageCached,
   scheduleThumbnailBackfill,
 } from './lib/imageCache'
+import {
+  createTaskDonePatch,
+  createTaskErrorPatch,
+  firstActualParams,
+  hasActualParams,
+  mapActualParamsByImage,
+  mapRevisedPromptsByImage,
+  markInterruptedOpenAIRunningTasks,
+} from './lib/taskState'
 
 export {
   ensureImageCached,
@@ -61,13 +70,13 @@ export {
   getCachedImage,
   subscribeImageThumbnail,
 } from './lib/imageCache'
+export { markInterruptedOpenAIRunningTasks } from './lib/taskState'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const OPENAI_INTERRUPTED_ERROR = '请求中断'
 
 function createOpenAITimeoutError(timeoutSeconds: number) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
@@ -398,26 +407,6 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
   return Boolean(submitMapping.taskIdPath)
 }
 
-export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
-  const interruptedTasks: TaskRecord[] = []
-  const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
-
-    const updated: TaskRecord = {
-      ...task,
-      status: 'error',
-      error: OPENAI_INTERRUPTED_ERROR,
-      falRecoverable: false,
-      finishedAt: now,
-      elapsed: Math.max(0, now - task.createdAt),
-    }
-    interruptedTasks.push(updated)
-    return updated
-  })
-
-  return { tasks: updatedTasks, interruptedTasks }
-}
-
 function clearOpenAIWatchdogTimer(taskId: string) {
   const timer = openAIWatchdogTimers.get(taskId)
   if (timer) clearTimeout(timer)
@@ -429,11 +418,8 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
   if (!task || !isRunningOpenAITask(task)) return false
 
   updateTaskInStore(taskId, {
-    status: 'error',
-    error,
+    ...createTaskErrorPatch(task, error, now),
     falRecoverable: false,
-    finishedAt: now,
-    elapsed: Math.max(0, now - task.createdAt),
   })
   return true
 }
@@ -575,23 +561,6 @@ function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_M
   customRecoveryTimers.set(taskId, timer)
 }
 
-function hasActualParams(params: Partial<TaskParams> | undefined): params is Partial<TaskParams> {
-  return Boolean(params && Object.keys(params).length > 0)
-}
-
-function firstActualParams(paramsList: Array<Partial<TaskParams> | undefined> | undefined): Partial<TaskParams> | undefined {
-  return paramsList?.find(hasActualParams)
-}
-
-function mapActualParamsByImage(outputIds: string[], paramsList: Array<Partial<TaskParams> | undefined> | undefined) {
-  const mapped = paramsList?.reduce<Record<string, Partial<TaskParams>>>((acc, params, index) => {
-    const imgId = outputIds[index]
-    if (imgId && hasActualParams(params)) acc[imgId] = params
-    return acc
-  }, {})
-  return mapped && Object.keys(mapped).length > 0 ? mapped : undefined
-}
-
 async function readImageSizeParam(dataUrl: string): Promise<Partial<TaskParams> | undefined> {
   if (typeof Image === 'undefined') return undefined
 
@@ -638,7 +607,7 @@ async function resolveImageSizeParamsList(
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
   const storedTasks = await getAllTasks()
-  const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks)
+  const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now())
   await Promise.all(interruptedTasks.map((task) => putTask(task)))
   useStore.getState().setTasks(tasks)
   for (const task of tasks) {
@@ -825,13 +794,11 @@ async function executeTask(taskId: string) {
   if (!task) return
   const taskProfile = getTaskApiProfile(settings, task)
   if (!taskProfile && task.apiProfileId) {
+    const now = Date.now()
     updateTaskInStore(taskId, {
-      status: 'error',
-      error: '找不到此任务所使用的 API 配置。',
+      ...createTaskErrorPatch(task, '找不到此任务所使用的 API 配置。', now),
       falRecoverable: false,
       customRecoverable: false,
-      finishedAt: Date.now(),
-      elapsed: Date.now() - task.createdAt,
     })
     return
   }
@@ -909,11 +876,9 @@ async function executeTask(taskId: string) {
     })()
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPromptByImage = shouldStoreRevisedPrompts ? result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
-      const imgId = outputIds[index]
-      if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
-      return acc
-    }, {}) : undefined
+    const revisedPromptByImage = shouldStoreRevisedPrompts
+      ? mapRevisedPromptsByImage(outputIds, result.revisedPrompts)
+      : undefined
     const promptWasRevised = shouldStoreRevisedPrompts && result.revisedPrompts?.some(
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
     )
@@ -930,15 +895,14 @@ async function executeTask(taskId: string) {
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') return
     clearOpenAIWatchdogTimer(taskId)
+    const now = Date.now()
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
-      status: 'done',
-      finishedAt: Date.now(),
-      elapsed: Date.now() - task.createdAt,
+      ...createTaskDonePatch(task, now),
       falRecoverable: false,
       customRecoverable: false,
     })
@@ -987,14 +951,12 @@ async function executeTask(taskId: string) {
       })
       scheduleCustomRecovery(taskId)
     } else {
+      const now = Date.now()
       updateTaskInStore(taskId, {
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
+        ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), now),
         errorResponse: getApiErrorResponseSnapshot(err),
         falRecoverable: false,
         customRecoverable: false,
-        finishedAt: Date.now(),
-        elapsed: Date.now() - task.createdAt,
       })
       useStore.getState().setDetailTaskId(taskId)
     }
