@@ -10,57 +10,12 @@ import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { getSafeBoundingClientRect } from '../lib/domRect'
+import { getContentEditableCursor, getContentEditablePlainText, getMentionTagHtml, setContentEditableCursor } from '../lib/contentEditableMentions'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import Select from './Select'
 import SizePickerModal from './SizePickerModal'
 import ViewportTooltip from './ViewportTooltip'
 import { CloseIcon, CollapseIcon, ExpandIcon } from './icons'
-
-
-/** 获取 contentEditable 中光标的纯文本偏移量 */
-function getContentEditableCursor(el: HTMLElement): number {
-  const sel = window.getSelection()
-  if (!sel || sel.rangeCount === 0) return el.textContent?.length ?? 0
-  try {
-    const range = sel.getRangeAt(0)
-    if (!el.contains(range.startContainer)) return el.textContent?.length ?? 0
-    const preRange = document.createRange()
-    preRange.selectNodeContents(el)
-    preRange.setEnd(range.startContainer, range.startOffset)
-    return preRange.toString().length
-  } catch {
-    return el.textContent?.length ?? 0
-  }
-}
-
-/** 在 contentEditable 中设置光标到指定纯文本偏移量 */
-function setContentEditableCursor(el: HTMLElement, offset: number) {
-  const sel = window.getSelection()
-  if (!sel) return
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-  let remaining = offset
-  let node: Text | null = null
-  while (walker.nextNode()) {
-    node = walker.currentNode as Text
-    if (remaining <= node.length) {
-      const range = document.createRange()
-      range.setStart(node, remaining)
-      range.collapse(true)
-      sel.removeAllRanges()
-      sel.addRange(range)
-      return
-    }
-    remaining -= node.length
-  }
-  // 如果偏移超出，放到末尾
-  if (node) {
-    const range = document.createRange()
-    range.setStart(node, node.length)
-    range.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(range)
-  }
-}
 
 /** 通用悬浮气泡提示 */
 function ButtonTooltip({ visible, text }: { visible: boolean; text: ReactNode }) {
@@ -813,7 +768,7 @@ export default function InputBar() {
     const html = prompt
       ? parts.map((part) =>
           part.type === 'mention'
-            ? `<span contenteditable="false" class="mention-tag">${part.text}</span>`
+            ? getMentionTagHtml(part.text)
             : part.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         ).join('')
       : ''
@@ -1584,7 +1539,7 @@ export default function InputBar() {
                 isUserInputRef.current = true
                 const el = e.currentTarget
                 setCursorPos(getContentEditableCursor(el))
-                const text = el.textContent ?? ''
+                const text = getContentEditablePlainText(el)
                 setPrompt(text)
                 setAtImageMenuIndex(0)
                 setAtImageMenuDismissed(false)
