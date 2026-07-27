@@ -107,11 +107,11 @@ export default function TaskCard({
 
   // 定时更新运行中任务的计时
   useEffect(() => {
-    if (task.status !== 'running' && !(task.status === 'error' && task.falRecoverable)) return
+    if (task.status !== 'running') return
     const id = setInterval(() => setNow(Date.now()), 1000)
     setNow(Date.now())
     return () => clearInterval(id)
-  }, [task.falRecoverable, task.status])
+  }, [task.status])
 
   // 加载缩略图
   useEffect(() => {
@@ -150,7 +150,7 @@ export default function TaskCard({
 
   const duration = (() => {
     let seconds: number
-    if (task.status === 'running' || task.falRecoverable) {
+    if (task.status === 'running') {
       seconds = Math.floor((now - task.createdAt) / 1000)
     } else if (task.elapsed != null) {
       seconds = Math.floor(task.elapsed / 1000)
@@ -163,8 +163,7 @@ export default function TaskCard({
   })()
   const isSwipeReady = Math.abs(swipeOffset) >= 40
   const showSwipeAction = isSwipeReady || swipeActionActive
-  const isFalReconnecting = task.status === 'error' && task.falRecoverable
-  const showRunningTimer = task.status === 'running' || isFalReconnecting
+  const showRunningTimer = task.status === 'running'
   const swipeBgClass = showSwipeAction
     ? swipeStartedSelected
       ? 'bg-gray-500 dark:bg-gray-600'
@@ -273,27 +272,7 @@ export default function TaskCard({
               <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
             </div>
           )}
-          {task.status === 'error' && isFalReconnecting && (
-            <div className="flex flex-col items-center gap-1 px-2">
-              <svg
-                className="w-7 h-7 text-yellow-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
-              </svg>
-              <span className="text-xs text-yellow-500 text-center leading-tight">
-                重连中
-              </span>
-            </div>
-          )}
-          {task.status === 'error' && !isFalReconnecting && (
+          {task.status === 'error' && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
                 className="w-7 h-7 text-red-400"
@@ -450,7 +429,7 @@ export default function TaskCard({
               className="flex w-full items-center justify-between flex-shrink-0 mt-0.5 sm:w-auto sm:justify-end sm:gap-1"
               onClick={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting) || settings.alwaysShowRetryButton) && (
+              {(task.status === 'error' || settings.alwaysShowRetryButton) && (
                 <button
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"

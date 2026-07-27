@@ -3,10 +3,9 @@ import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import {
   createTaskDonePatch,
   createTaskErrorPatch,
-  firstActualParams,
   mapActualParamsByImage,
   mapRevisedPromptsByImage,
-  markInterruptedOpenAIRunningTasks,
+  markInterruptedRunningTasks,
 } from './taskState'
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -41,14 +40,13 @@ describe('taskState', () => {
     })
   })
 
-  it('interrupts all non-fal running tasks', () => {
+  it('interrupts all running tasks', () => {
     const legacy = task({ id: 'legacy', status: 'running', finishedAt: null, elapsed: null })
     const openai = task({ id: 'openai', apiProvider: 'openai', status: 'running', finishedAt: null, elapsed: null })
     const legacyCustom = task({ id: 'legacy-custom', apiProvider: 'custom', status: 'running', finishedAt: null, elapsed: null })
-    const fal = task({ id: 'fal', apiProvider: 'fal', status: 'running' })
     const done = task({ id: 'done' })
 
-    const result = markInterruptedOpenAIRunningTasks([legacy, openai, legacyCustom, fal, done], 3_000)
+    const result = markInterruptedRunningTasks([legacy, openai, legacyCustom, done], 3_000)
 
     expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy', 'openai', 'legacy-custom'])
     expect(result.tasks.find((item) => item.id === 'legacy')).toMatchObject({
@@ -56,20 +54,17 @@ describe('taskState', () => {
       error: '请求中断',
       finishedAt: 3_000,
       elapsed: 2_000,
-      falRecoverable: false,
     })
     expect(result.tasks.find((item) => item.id === 'legacy-custom')).toMatchObject({
       status: 'error',
       error: '请求中断',
     })
-    expect(result.tasks.find((item) => item.id === 'fal')).toEqual(fal)
     expect(result.tasks.find((item) => item.id === 'done')).toEqual(done)
   })
 
   it('maps actual params and revised prompts to matching image ids', () => {
     const params = [{ size: '1024x1024' }, undefined, { quality: 'high' as const }]
 
-    expect(firstActualParams(params)).toEqual({ size: '1024x1024' })
     expect(mapActualParamsByImage(['a', 'b', 'c'], params)).toEqual({
       a: { size: '1024x1024' },
       c: { quality: 'high' },

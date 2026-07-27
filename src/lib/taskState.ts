@@ -25,16 +25,14 @@ export function createTaskErrorPatch(
   }
 }
 
-export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: number) {
+export function markInterruptedRunningTasks(tasks: TaskRecord[], now: number) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    const isOpenAITask = (task.apiProvider ?? 'openai') !== 'fal'
-    if (task.status !== 'running' || !isOpenAITask) return task
+    if (task.status !== 'running') return task
 
     const updated: TaskRecord = {
       ...task,
       ...createTaskErrorPatch(task, '请求中断', now),
-      falRecoverable: false,
     }
     interruptedTasks.push(updated)
     return updated
@@ -45,12 +43,6 @@ export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: numb
 
 export function hasActualParams(params: ActualParams | undefined): params is ActualParams {
   return Boolean(params && Object.keys(params).length > 0)
-}
-
-export function firstActualParams(
-  paramsList: Array<ActualParams | undefined> | undefined,
-): ActualParams | undefined {
-  return paramsList?.find(hasActualParams)
 }
 
 export function mapActualParamsByImage(

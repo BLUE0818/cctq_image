@@ -105,12 +105,6 @@ export interface TaskRecord {
   apiProfileName?: string
   /** 生成时使用的模型 ID */
   apiModel?: string
-  /** 历史队列请求 ID，用于连接断开后的结果恢复 */
-  falRequestId?: string
-  /** 历史队列 endpoint，用于连接断开后的状态和结果查询 */
-  falEndpoint?: string
-  /** 历史队列任务连接断开后是否等待自动恢复 */
-  falRecoverable?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
