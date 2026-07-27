@@ -8,7 +8,6 @@ export const MIME_MAP: Record<string, string> = {
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
 export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
-const MAX_ERROR_RESPONSE_BODY_CHARS = 100 * 1024
 const ERROR_RESPONSE_HEADER_ALLOWLIST = new Set([
   'content-type',
   'date',
@@ -36,7 +35,6 @@ export interface CallApiOptions {
   inputImageDataUrls: string[]
   maskDataUrl?: string
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
-  onCustomTaskEnqueued?: (task: { taskId: string }) => void
 }
 
 export interface CallApiResult {
@@ -49,7 +47,7 @@ export interface CallApiResult {
   /** 每张图片对应的 API 改写提示词 */
   revisedPrompts?: Array<string | undefined>
   /** 并发多图请求中失败的单张请求 */
-  failedRequests?: Array<{ requestIndex: number; error: string }>
+  failedRequests?: Array<{ requestIndex: number; error: string; response?: ApiErrorResponseSnapshot }>
 }
 
 export function isHttpUrl(value: unknown): value is string {
@@ -194,14 +192,6 @@ function pickSafeResponseHeaders(headers: Headers): Record<string, string> | und
   return Object.keys(picked).length ? picked : undefined
 }
 
-function truncateErrorBody(body: string): { body: string; truncated?: boolean } {
-  if (body.length <= MAX_ERROR_RESPONSE_BODY_CHARS) return { body }
-  return {
-    body: body.slice(0, MAX_ERROR_RESPONSE_BODY_CHARS),
-    truncated: true,
-  }
-}
-
 function extractApiErrorMessage(parsed: unknown, fallback: string): string {
   if (!parsed || typeof parsed !== 'object') return fallback
   const record = parsed as Record<string, unknown>
@@ -218,30 +208,58 @@ function extractApiErrorMessage(parsed: unknown, fallback: string): string {
   return fallback
 }
 
+export function isApiErrorPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+  const error = (payload as Record<string, unknown>).error
+  return error !== undefined && error !== null && error !== false && error !== ''
+}
+
+export function hasApiErrorMessagePayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+  const record = payload as Record<string, unknown>
+  if (typeof record.message === 'string' && record.message.trim()) return true
+  if (typeof record.detail === 'string' && record.detail.trim()) return true
+  return Array.isArray(record.detail) && record.detail.length > 0
+}
+
+export function createApiResponseError(
+  response: Response,
+  rawBody: string,
+  parsed?: unknown,
+): ApiResponseError {
+  const fallback = `HTTP ${response.status}`
+  const message = parsed === undefined ? fallback : extractApiErrorMessage(parsed, fallback)
+  return new ApiResponseError(message, {
+    status: response.status,
+    statusText: response.statusText,
+    url: response.url || undefined,
+    headers: pickSafeResponseHeaders(response.headers),
+    body: rawBody,
+  })
+}
+
 export async function readApiErrorResponse(response: Response): Promise<ApiResponseError> {
-  let errorMsg = `HTTP ${response.status}`
   let rawBody = ''
+  let parsed: unknown
   try {
     rawBody = await response.text()
     if (rawBody) {
       try {
-        errorMsg = extractApiErrorMessage(JSON.parse(rawBody), errorMsg)
+        parsed = JSON.parse(rawBody)
       } catch {
-        errorMsg = rawBody
+        return new ApiResponseError(rawBody, {
+          status: response.status,
+          statusText: response.statusText,
+          url: response.url || undefined,
+          headers: pickSafeResponseHeaders(response.headers),
+          body: rawBody,
+        })
       }
     }
   } catch {
     /* keep default status message */
   }
-  const truncated = truncateErrorBody(rawBody)
-  return new ApiResponseError(errorMsg, {
-    status: response.status,
-    statusText: response.statusText,
-    url: response.url || undefined,
-    headers: pickSafeResponseHeaders(response.headers),
-    body: truncated.body,
-    truncated: truncated.truncated,
-  })
+  return createApiResponseError(response, rawBody, parsed)
 }
 
 export function getApiErrorResponseSnapshot(err: unknown): ApiErrorResponseSnapshot | undefined {

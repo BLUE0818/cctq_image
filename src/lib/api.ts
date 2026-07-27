@@ -1,4 +1,4 @@
-import { getActiveApiProfile, getCustomProviderDefinition } from './apiProfiles'
+import { getActiveApiProfile } from './apiProfiles'
 import { callOpenAICompatibleImageApi } from './openaiCompatibleImageApi'
 import type { CallApiOptions, CallApiResult } from './imageApiShared'
 
@@ -7,5 +7,5 @@ export { normalizeBaseUrl } from './devProxy'
 
 export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult> {
   const profile = getActiveApiProfile(opts.settings)
-  return callOpenAICompatibleImageApi(opts, profile, getCustomProviderDefinition(opts.settings, profile.provider))
+  return callOpenAICompatibleImageApi(opts, profile)
 }

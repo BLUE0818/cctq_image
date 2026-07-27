@@ -48,11 +48,11 @@ export default function DetailModal() {
   }, [detailTaskId])
 
   useEffect(() => {
-    if (task?.status !== 'running' && !(task?.status === 'error' && (task.falRecoverable || task.customRecoverable))) return
+    if (task?.status !== 'running' && !(task?.status === 'error' && task.falRecoverable)) return
     const id = window.setInterval(() => setNow(Date.now()), 1000)
     setNow(Date.now())
     return () => window.clearInterval(id)
-  }, [task?.customRecoverable, task?.falRecoverable, task?.status])
+  }, [task?.falRecoverable, task?.status])
 
   // 加载所有相关图片
   useEffect(() => {
@@ -100,17 +100,24 @@ export default function DetailModal() {
         outputImageIndex,
         imageId,
         error: '',
+        response: undefined,
       }))
     }
 
-    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
+    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item]))
     const requestedCount = Math.max(task.params.n, task.outputImages.length + outputErrors.length)
     let outputImageIndex = 0
     return Array.from({ length: requestedCount }, (_, requestIndex) => {
-      const error = errorsByIndex.get(requestIndex)
-      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
+      const failure = errorsByIndex.get(requestIndex)
+      if (failure) return {
+        requestIndex,
+        outputImageIndex: -1,
+        imageId: '',
+        error: failure.error,
+        response: failure.response,
+      }
       const imageId = task.outputImages[outputImageIndex] ?? ''
-      const slot = { requestIndex, outputImageIndex, imageId, error: '' }
+      const slot = { requestIndex, outputImageIndex, imageId, error: '', response: undefined }
       outputImageIndex += 1
       return slot
     })
@@ -118,6 +125,9 @@ export default function DetailModal() {
   const currentOutputSlot = outputSlots[imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputError = currentOutputSlot?.error || ''
+  const currentOutputErrorResponseText = currentOutputSlot?.response
+    ? JSON.stringify(currentOutputSlot.response, null, 2)
+    : ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
 
   useEffect(() => {
@@ -206,7 +216,6 @@ export default function DetailModal() {
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
-  const isCustomReconnecting = task.status === 'error' && task.customRecoverable
   const errorResponseText = task.errorResponse
     ? JSON.stringify(task.errorResponse, null, 2)
     : ''
@@ -217,7 +226,7 @@ export default function DetailModal() {
   }
 
   const formatDuration = () => {
-    if (task.status === 'running' || isFalReconnecting || isCustomReconnecting) {
+    if (task.status === 'running' || isFalReconnecting) {
       const seconds = Math.max(0, Math.floor((now - task.createdAt) / 1000))
       const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
       const ss = String(seconds % 60).padStart(2, '0')
@@ -494,6 +503,14 @@ export default function DetailModal() {
               >
                 {currentOutputError}
               </p>
+              {currentOutputErrorResponseText && (
+                <div className="mt-3 max-h-48 overflow-auto rounded border border-red-200/70 bg-red-50/70 p-3 text-left dark:border-red-400/20 dark:bg-red-950/20">
+                  <div className="mb-2 text-xs font-medium text-red-500">上游响应</div>
+                  <pre className="whitespace-pre-wrap break-all text-xs leading-5 text-red-700 dark:text-red-200">
+                    {currentOutputErrorResponseText}
+                  </pre>
+                </div>
+              )}
               {outputLen > 1 && (
                 <>
                   <button

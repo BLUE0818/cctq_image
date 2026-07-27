@@ -2,7 +2,6 @@
 
 export type BuiltInApiProvider = 'openai'
 export type ApiProvider = BuiltInApiProvider | string
-export type CustomProviderTemplate = 'http-image'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
   'task-detail-all',
@@ -10,57 +9,10 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection']
 
-export type CustomProviderRequestMethod = 'GET' | 'POST'
-export type CustomProviderContentType = 'json' | 'multipart'
-export type CustomProviderFileSource = 'inputImages' | 'mask'
-
-export interface CustomProviderFileMapping {
-  field: string
-  source: CustomProviderFileSource
-  array?: boolean
-}
-
-export interface CustomProviderResultMapping {
-  imageUrlPaths?: string[]
-  b64JsonPaths?: string[]
-}
-
-export interface CustomProviderSubmitMapping {
-  path: string
-  method?: CustomProviderRequestMethod
-  contentType?: CustomProviderContentType
-  query?: Record<string, string>
-  body?: Record<string, unknown>
-  files?: CustomProviderFileMapping[]
-  taskIdPath?: string
-  result?: CustomProviderResultMapping
-}
-
-export interface CustomProviderPollMapping {
-  path: string
-  method?: CustomProviderRequestMethod
-  query?: Record<string, string>
-  intervalSeconds?: number
-  statusPath: string
-  successValues: string[]
-  failureValues: string[]
-  errorPath?: string
-  result: CustomProviderResultMapping
-}
-
-export interface CustomProviderDefinition {
-  id: string
-  name: string
-  template?: CustomProviderTemplate
-  submit: CustomProviderSubmitMapping
-  editSubmit?: CustomProviderSubmitMapping
-  poll?: CustomProviderPollMapping
-}
-
 export interface ApiProfile {
   id: string
   name: string
-  provider: ApiProvider
+  provider: BuiltInApiProvider
   baseUrl: string
   apiKey: string
   model: string
@@ -77,7 +29,6 @@ export interface AppSettings {
   timeout: number
   codexCli: boolean
   apiProxy: boolean
-  customProviders: CustomProviderDefinition[]
   clearInputAfterSubmit: boolean
   persistInputOnRestart: boolean
   reuseTaskApiProfileTemporarily: boolean
@@ -136,6 +87,12 @@ export interface ApiErrorResponseSnapshot {
   truncated?: boolean
 }
 
+export interface TaskOutputError {
+  requestIndex: number
+  error: string
+  response?: ApiErrorResponseSnapshot
+}
+
 export interface TaskRecord {
   id: string
   prompt: string
@@ -154,10 +111,6 @@ export interface TaskRecord {
   falEndpoint?: string
   /** 历史队列任务连接断开后是否等待自动恢复 */
   falRecoverable?: boolean
-  /** 自定义异步服务商任务 ID，用于重启后继续查询结果 */
-  customTaskId?: string
-  /** 自定义异步任务是否等待自动恢复 */
-  customRecoverable?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
@@ -171,7 +124,7 @@ export interface TaskRecord {
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
-  outputErrors?: Array<{ requestIndex: number; error: string }>
+  outputErrors?: TaskOutputError[]
   status: TaskStatus
   error: string | null
   errorResponse?: ApiErrorResponseSnapshot

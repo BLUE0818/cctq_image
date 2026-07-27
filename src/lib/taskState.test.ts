@@ -41,16 +41,16 @@ describe('taskState', () => {
     })
   })
 
-  it('interrupts only nonrecoverable OpenAI-compatible running tasks', () => {
+  it('interrupts all non-fal running tasks', () => {
     const legacy = task({ id: 'legacy', status: 'running', finishedAt: null, elapsed: null })
     const openai = task({ id: 'openai', apiProvider: 'openai', status: 'running', finishedAt: null, elapsed: null })
-    const queued = task({ id: 'queued', apiProvider: 'custom', customTaskId: 'queue-1', status: 'running' })
+    const legacyCustom = task({ id: 'legacy-custom', apiProvider: 'custom', status: 'running', finishedAt: null, elapsed: null })
     const fal = task({ id: 'fal', apiProvider: 'fal', status: 'running' })
     const done = task({ id: 'done' })
 
-    const result = markInterruptedOpenAIRunningTasks([legacy, openai, queued, fal, done], 3_000)
+    const result = markInterruptedOpenAIRunningTasks([legacy, openai, legacyCustom, fal, done], 3_000)
 
-    expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy', 'openai'])
+    expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy', 'openai', 'legacy-custom'])
     expect(result.tasks.find((item) => item.id === 'legacy')).toMatchObject({
       status: 'error',
       error: '请求中断',
@@ -58,7 +58,10 @@ describe('taskState', () => {
       elapsed: 2_000,
       falRecoverable: false,
     })
-    expect(result.tasks.find((item) => item.id === 'queued')).toEqual(queued)
+    expect(result.tasks.find((item) => item.id === 'legacy-custom')).toMatchObject({
+      status: 'error',
+      error: '请求中断',
+    })
     expect(result.tasks.find((item) => item.id === 'fal')).toEqual(fal)
     expect(result.tasks.find((item) => item.id === 'done')).toEqual(done)
   })

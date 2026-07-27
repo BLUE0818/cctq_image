@@ -155,9 +155,8 @@ describe('export zip', () => {
 })
 
 describe('data operation locking', () => {
-  it('detects running and recoverable supported tasks', () => {
+  it('detects running tasks', () => {
     expect(hasActiveDataOperations([task({ status: 'running' })])).toBe(true)
-    expect(hasActiveDataOperations([task({ customRecoverable: true })])).toBe(true)
     expect(hasActiveDataOperations([task()])).toBe(false)
   })
 })
