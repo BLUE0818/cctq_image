@@ -4,7 +4,7 @@ import { useStore, submitTask, addImageFromFile, updateTaskInStore, removeMultip
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { DEFAULT_PARAMS } from '../types'
 import { getActiveApiProfile, normalizeSettings } from '../lib/apiProfiles'
-import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
+import { getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageMentionLabel, getPromptMentionParts, imageMentionMatches, insertImageMention } from '../lib/promptImageMentions'
 import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
@@ -160,8 +160,6 @@ export default function InputBar() {
   const [submitHover, setSubmitHover] = useState(false)
   const [attachHover, setAttachHover] = useState(false)
   const [compressionHintVisible, setCompressionHintVisible] = useState(false)
-  const [moderationHintVisible, setModerationHintVisible] = useState(false)
-  const [sizeHintVisible, setSizeHintVisible] = useState(false)
   const [qualityHintVisible, setQualityHintVisible] = useState(false)
   const [imageHintId, setImageHintId] = useState<string | null>(null)
   const [mobileCollapsed, setMobileCollapsed] = useState(false)
@@ -185,8 +183,6 @@ export default function InputBar() {
   const [menuLeft, setMenuLeft] = useState(0)
   const showPromptExpand = promptExpanded || promptCanExpand
   const compressionHintTimerRef = useRef<number | null>(null)
-  const moderationHintTimerRef = useRef<number | null>(null)
-  const sizeHintTimerRef = useRef<number | null>(null)
   const qualityHintTimerRef = useRef<number | null>(null)
   const imageHintTimerRef = useRef<number | null>(null)
   const nLimitHintTimerRef = useRef<number | null>(null)
@@ -234,28 +230,17 @@ export default function InputBar() {
   ), [activeProfile.id, currentActiveProfile.id, settings])
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig)
-  const activeProvider = activeProfile.provider
-  const moderationDisabled = false
   const compressionDisabled = params.output_format === 'png'
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
-  const isFalTextToImage = false && inputImages.length === 0
   const nLimitHintText = `最大请求数量为 ${outputImageLimit}`
   const nTimeoutHintText = '大于 1 的数量很可能会超时'
-  const displaySize = isFalTextToImage && params.size === 'auto'
-    ? DEFAULT_FAL_IMAGE_SIZE
-    : normalizeImageSize(params.size) || DEFAULT_PARAMS.size
-  const qualityOptions = false
-    ? [
-        { label: 'low', value: 'low' },
-        { label: 'medium', value: 'medium' },
-        { label: 'high', value: 'high' },
-      ]
-    : [
-        { label: 'auto', value: 'auto' },
-        { label: 'low', value: 'low' },
-        { label: 'medium', value: 'medium' },
-        { label: 'high', value: 'high' },
-      ]
+  const displaySize = normalizeImageSize(params.size) || DEFAULT_PARAMS.size
+  const qualityOptions = [
+    { label: 'auto', value: 'auto' },
+    { label: 'low', value: 'low' },
+    { label: 'medium', value: 'medium' },
+    { label: 'high', value: 'high' },
+  ]
   const atImageLimit = inputImages.length >= API_MAX_IMAGES
   const maskTargetImage = maskDraft
     ? inputImages.find((img) => img.id === maskDraft.targetImageId) ?? null
@@ -325,14 +310,8 @@ export default function InputBar() {
     if (compressionHintTimerRef.current != null) {
       window.clearTimeout(compressionHintTimerRef.current)
     }
-    if (moderationHintTimerRef.current != null) {
-      window.clearTimeout(moderationHintTimerRef.current)
-    }
     if (qualityHintTimerRef.current != null) {
       window.clearTimeout(qualityHintTimerRef.current)
-    }
-    if (sizeHintTimerRef.current != null) {
-      window.clearTimeout(sizeHintTimerRef.current)
     }
     if (imageHintTimerRef.current != null) {
       window.clearTimeout(imageHintTimerRef.current)
@@ -445,30 +424,6 @@ export default function InputBar() {
     showNLimitHint()
   }, [nInput, nInputFocused, outputImageLimit, params.n, showNLimitHint])
 
-  const showModerationHint = () => {
-    if (moderationDisabled) setModerationHintVisible(true)
-  }
-
-  const hideModerationHint = () => {
-    setModerationHintVisible(false)
-    clearModerationHintTimer()
-  }
-
-  const clearModerationHintTimer = () => {
-    if (moderationHintTimerRef.current != null) {
-      window.clearTimeout(moderationHintTimerRef.current)
-      moderationHintTimerRef.current = null
-    }
-  }
-
-  const startModerationHintTouch = () => {
-    if (!moderationDisabled) return
-    moderationHintTimerRef.current = window.setTimeout(() => {
-      setModerationHintVisible(true)
-      moderationHintTimerRef.current = null
-    }, 450)
-  }
-
   const showCompressionHint = () => setCompressionHintVisible(true)
 
   const hideCompressionHint = () => {
@@ -494,30 +449,6 @@ export default function InputBar() {
     if (settings.codexCli) setQualityHintVisible(true)
   }
 
-  const showSizeHint = () => {
-    if (isFalTextToImage) setSizeHintVisible(true)
-  }
-
-  const hideSizeHint = () => {
-    setSizeHintVisible(false)
-    clearSizeHintTimer()
-  }
-
-  const clearSizeHintTimer = () => {
-    if (sizeHintTimerRef.current != null) {
-      window.clearTimeout(sizeHintTimerRef.current)
-      sizeHintTimerRef.current = null
-    }
-  }
-
-  const startSizeHintTouch = () => {
-    if (!isFalTextToImage) return
-    sizeHintTimerRef.current = window.setTimeout(() => {
-      setSizeHintVisible(true)
-      sizeHintTimerRef.current = null
-    }, 450)
-  }
-
   const hideQualityHint = () => {
     setQualityHintVisible(false)
     clearQualityHintTimer()
@@ -531,7 +462,7 @@ export default function InputBar() {
   }
 
   const startQualityHintTouch = () => {
-    if (!settings.codexCli && !false) return
+    if (!settings.codexCli) return
     qualityHintTimerRef.current = window.setTimeout(() => {
       setQualityHintVisible(true)
       qualityHintTimerRef.current = null
@@ -1189,15 +1120,7 @@ export default function InputBar() {
 
   const renderParams = (cols: string) => (
     <div className={`grid ${cols} gap-2 text-xs flex-1`}>
-      <label
-        className="relative flex flex-col gap-0.5"
-        onMouseEnter={showSizeHint}
-        onMouseLeave={hideSizeHint}
-        onTouchStart={startSizeHintTouch}
-        onTouchEnd={clearSizeHintTimer}
-        onTouchCancel={hideSizeHint}
-        onClick={showSizeHint}
-      >
+      <label className="relative flex flex-col gap-0.5">
         <span className="text-gray-400 dark:text-gray-500 ml-1">尺寸</span>
         <button
           type="button"
@@ -1207,10 +1130,6 @@ export default function InputBar() {
         >
           {displaySize}
         </button>
-        <ButtonTooltip
-          visible={isFalTextToImage && sizeHintVisible}
-          text={<>不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>}
-        />
       </label>
       <label
         className="relative flex flex-col gap-0.5"
@@ -1223,7 +1142,7 @@ export default function InputBar() {
       >
         <span className="text-gray-400 dark:text-gray-500 ml-1">质量</span>
         <Select
-          value={settings.codexCli ? 'auto' : false && params.quality === 'auto' ? 'high' : params.quality}
+          value={settings.codexCli ? 'auto' : params.quality}
           onChange={(val) => {
             if (!settings.codexCli) setParams({ quality: val as any })
           }}
@@ -1234,7 +1153,7 @@ export default function InputBar() {
             : selectClass}
         />
         <ButtonTooltip
-          visible={(settings.codexCli) && qualityHintVisible}
+          visible={settings.codexCli && qualityHintVisible}
           text={'Codex CLI 不支持质量参数'}
         />
       </label>
@@ -1281,33 +1200,16 @@ export default function InputBar() {
           text={'仅 JPEG 和 WebP 支持压缩率'}
         />
       </label>
-      <label
-        className="relative flex flex-col gap-0.5"
-        onMouseEnter={showModerationHint}
-        onMouseLeave={hideModerationHint}
-        onTouchStart={startModerationHintTouch}
-        onTouchEnd={clearModerationHintTimer}
-        onTouchCancel={hideModerationHint}
-        onClick={showModerationHint}
-      >
+      <label className="relative flex flex-col gap-0.5">
         <span className="text-gray-400 dark:text-gray-500 ml-1">审核</span>
         <Select
-          value={moderationDisabled ? 'auto' : params.moderation}
-          onChange={(val) => {
-            if (!moderationDisabled) setParams({ moderation: val as any })
-          }}
+          value={params.moderation}
+          onChange={(val) => setParams({ moderation: val as any })}
           options={[
             { label: 'auto', value: 'auto' },
             { label: 'low', value: 'low' },
           ]}
-          disabled={moderationDisabled}
-          className={moderationDisabled
-            ? 'px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-gray-100/50 dark:bg-white/[0.05] opacity-50 cursor-not-allowed text-xs transition-all duration-200 shadow-sm'
-            : selectClass}
-        />
-        <ButtonTooltip
-          visible={moderationDisabled && moderationHintVisible}
-          text={'不支持审核参数'}
+          className={selectClass}
         />
       </label>
       <label className="relative flex flex-col gap-0.5">
@@ -1385,10 +1287,10 @@ export default function InputBar() {
 
       {showSizePicker && (
         <SizePickerModal
-          currentSize={isFalTextToImage && params.size === 'auto' ? DEFAULT_FAL_IMAGE_SIZE : params.size}
+          currentSize={params.size}
           onSelect={(size) => setParams({ size })}
           onClose={() => setShowSizePicker(false)}
-          allowAuto={!isFalTextToImage}
+          allowAuto
         />
       )}
 

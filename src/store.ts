@@ -60,11 +60,9 @@ import {
 import {
   createTaskDonePatch,
   createTaskErrorPatch,
-  firstActualParams,
-  hasActualParams,
   mapActualParamsByImage,
   mapRevisedPromptsByImage,
-  markInterruptedOpenAIRunningTasks,
+  markInterruptedRunningTasks,
 } from './lib/taskState'
 
 export {
@@ -73,10 +71,8 @@ export {
   getCachedImage,
   subscribeImageThumbnail,
 } from './lib/imageCache'
-export { markInterruptedOpenAIRunningTasks } from './lib/taskState'
+export { markInterruptedRunningTasks } from './lib/taskState'
 
-const FAL_RECOVERY_POLL_MS = 10_000
-const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function createOpenAITimeoutError(timeoutSeconds: number) {
@@ -339,12 +335,8 @@ export function getCodexCliPromptKey(settings: AppSettings): string {
   return `${profile.baseUrl}\n${profile.apiKey}`
 }
 
-function isOpenAITask(task: TaskRecord) {
-  return (task.apiProvider ?? 'openai') !== 'fal'
-}
-
 function isRunningOpenAITask(task: TaskRecord) {
-  return task.status === 'running' && isOpenAITask(task)
+  return task.status === 'running'
 }
 
 function clearOpenAIWatchdogTimer(taskId: string) {
@@ -359,7 +351,6 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
 
   updateTaskInStore(taskId, {
     ...createTaskErrorPatch(task, error, now),
-    falRecoverable: false,
   })
   return true
 }
@@ -452,86 +443,12 @@ function getTaskApiProfileName(task: TaskRecord) {
   return task.apiProfileName || task.apiModel || '未知配置'
 }
 
-function isFalConnectionRecoverableError(err: unknown) {
-  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
-  const message = err instanceof Error ? err.message : String(err)
-  return /abort|network|failed to fetch|fetch failed|load failed|timeout|连接|断开|中断/i.test(message)
-}
-
-function clearFalRecoveryTimer(taskId: string) {
-  const timer = falRecoveryTimers.get(taskId)
-  if (timer) clearTimeout(timer)
-  falRecoveryTimers.delete(taskId)
-}
-
-function scheduleFalRecovery(taskId: string, delayMs = FAL_RECOVERY_POLL_MS) {
-  if (falRecoveryTimers.has(taskId)) return
-  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
-  const timer = setTimeout(() => {
-    falRecoveryTimers.delete(taskId)
-  }, delayMs)
-  falRecoveryTimers.set(taskId, timer)
-}
-
-async function readImageSizeParam(dataUrl: string): Promise<Partial<TaskParams> | undefined> {
-  if (typeof Image === 'undefined') return undefined
-
-  return new Promise((resolve) => {
-    let settled = false
-    const image = new Image()
-    const finish = (params: Partial<TaskParams> | undefined) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(params)
-    }
-    const timer = setTimeout(() => finish(undefined), 2000)
-    image.onload = () => {
-      if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-        finish({ size: `${image.naturalWidth}x${image.naturalHeight}` })
-      } else {
-        finish(undefined)
-      }
-    }
-    image.onerror = () => finish(undefined)
-    image.src = dataUrl
-    if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
-      finish({ size: `${image.naturalWidth}x${image.naturalHeight}` })
-    }
-  })
-}
-
-async function readImageSizeParamsList(images: string[]): Promise<Array<Partial<TaskParams> | undefined>> {
-  return Promise.all(images.map((image) => readImageSizeParam(image)))
-}
-
-async function resolveImageSizeParamsList(
-  images: string[],
-  preferred?: Array<Partial<TaskParams> | undefined>,
-): Promise<Array<Partial<TaskParams> | undefined>> {
-  if (preferred?.length === images.length && preferred.every(hasActualParams)) return preferred
-  const fallback = await readImageSizeParamsList(images)
-  return images.map((_, index) => hasActualParams(preferred?.[index]) ? preferred?.[index] : fallback[index])
-}
-
-
-
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
   const storedTasks = await getAllTasks()
-  const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now())
+  const { tasks, interruptedTasks } = markInterruptedRunningTasks(storedTasks, Date.now())
   await Promise.all(interruptedTasks.map((task) => putTask(task)))
   useStore.getState().setTasks(tasks)
-  for (const task of tasks) {
-    if (
-      task.apiProvider === 'fal' &&
-      task.falRequestId &&
-      task.falEndpoint &&
-      (task.status === 'running' || task.falRecoverable)
-    ) {
-      scheduleFalRecovery(task.id, 0)
-    }
-  }
 
   // 收集所有任务引用的图片 id
   const referencedIds = new Set<string>()
@@ -703,20 +620,12 @@ async function executeTask(taskId: string) {
     const now = Date.now()
     updateTaskInStore(taskId, {
       ...createTaskErrorPatch(task, '找不到此任务所使用的 API 配置。', now),
-      falRecoverable: false,
     })
     return
   }
   const activeProfile = taskProfile ?? getActiveApiProfile(settings)
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
-  const taskProvider = task.apiProvider ?? activeProfile.provider
-  let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
-    ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
-    : null
-
-  if (taskProvider !== 'fal') {
-    scheduleOpenAIWatchdog(taskId, activeProfile.timeout)
-  }
+  scheduleOpenAIWatchdog(taskId, activeProfile.timeout)
 
   try {
     // 获取输入图片 data URLs
@@ -738,14 +647,6 @@ async function executeTask(taskId: string) {
       params: task.params,
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
-      onFalRequestEnqueued: (request) => {
-        falRequestInfo = request
-        updateTaskInStore(taskId, {
-          falRequestId: request.requestId,
-          falEndpoint: request.endpoint,
-          falRecoverable: false,
-        })
-      },
     })
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -758,23 +659,15 @@ async function executeTask(taskId: string) {
       cacheImage(imgId, dataUrl)
       outputIds.push(imgId)
     }
-    const actualParamsList = taskProvider === 'fal'
-      ? await resolveImageSizeParamsList(result.images, result.actualParamsList)
-      : result.actualParamsList
-    const actualParams = (() => {
-      if (taskProvider === 'fal') return firstActualParams(actualParamsList)
-      return { ...result.actualParams, n: outputIds.length }
-    })()
-    const shouldStoreRevisedPrompts = taskProvider !== 'fal'
+    const actualParamsList = result.actualParamsList
+    const actualParams = { ...result.actualParams, n: outputIds.length }
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPromptByImage = shouldStoreRevisedPrompts
-      ? mapRevisedPromptsByImage(outputIds, result.revisedPrompts)
-      : undefined
-    const promptWasRevised = shouldStoreRevisedPrompts && result.revisedPrompts?.some(
+    const revisedPromptByImage = mapRevisedPromptsByImage(outputIds, result.revisedPrompts)
+    const promptWasRevised = result.revisedPrompts?.some(
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
     )
-    const hasRevisedPromptValue = shouldStoreRevisedPrompts && result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
-    if (taskProvider === 'openai' && !activeProfile.codexCli) {
+    const hasRevisedPromptValue = result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
+    if (!activeProfile.codexCli) {
       if (promptWasRevised) {
         showCodexCliPrompt()
       } else if (!hasRevisedPromptValue) {
@@ -797,7 +690,6 @@ async function executeTask(taskId: string) {
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
       ...createTaskDonePatch(task, now),
-      falRecoverable: false,
     })
 
     const failedCount = result.failedRequests?.length ?? 0
@@ -818,29 +710,12 @@ async function executeTask(taskId: string) {
     clearOpenAIWatchdogTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestTask || latestTask.status !== 'running') return
-    const latestFalRequestInfo = falRequestInfo ?? (latestTask.falRequestId && latestTask.falEndpoint
-      ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
-      : null)
-    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
-      updateTaskInStore(taskId, {
-        status: 'error',
-        error: '与历史队列任务的连接已断开，之后会继续查询任务结果。',
-        falRequestId: latestFalRequestInfo.requestId,
-        falEndpoint: latestFalRequestInfo.endpoint,
-        falRecoverable: true,
-        finishedAt: Date.now(),
-        elapsed: Date.now() - task.createdAt,
-      })
-      scheduleFalRecovery(taskId)
-    } else {
-      const now = Date.now()
-      updateTaskInStore(taskId, {
-        ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), now),
-        errorResponse: getApiErrorResponseSnapshot(err),
-        falRecoverable: false,
-      })
-      useStore.getState().setDetailTaskId(taskId)
-    }
+    const now = Date.now()
+    updateTaskInStore(taskId, {
+      ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), now),
+      errorResponse: getApiErrorResponseSnapshot(err),
+    })
+    useStore.getState().setDetailTaskId(taskId)
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {
@@ -1042,7 +917,6 @@ async function removeTasks(taskIds: string[]) {
   const imageIds = new Set<string>()
   for (const task of deletedTasks) {
     addTaskImageIds(imageIds, task)
-    clearFalRecoveryTimer(task.id)
     clearOpenAIWatchdogTimer(task.id)
   }
 
