@@ -29,7 +29,7 @@ export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: numb
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
     const isOpenAITask = (task.apiProvider ?? 'openai') !== 'fal'
-    if (task.status !== 'running' || !isOpenAITask || task.customTaskId) return task
+    if (task.status !== 'running' || !isOpenAITask) return task
 
     const updated: TaskRecord = {
       ...task,

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { normalizeBaseUrl } from '../lib/api'
 import { hasActiveDataOperations } from '../lib/dataOperations'
 import { isApiProxyAvailable, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData } from '../store'
@@ -10,19 +9,12 @@ import {
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
   IMAGE_MODEL_OPTIONS,
-  findEquivalentApiProfile,
-  getApiProviderLabel,
   getActiveApiProfile,
-  importCustomProviderSettingsFromJson,
-  isOpenAICompatibleProvider,
-  mergeImportedSettings,
-  normalizeCustomProviderDefinition,
   normalizeImageModel,
   normalizeSettings,
-  switchApiProfileProvider,
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
-import type { ApiProfile, AppSettings, CustomProviderDefinition, ZipDownloadRoute } from '../types'
+import type { ApiProfile, AppSettings, ZipDownloadRoute } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
@@ -31,198 +23,13 @@ import Checkbox from './Checkbox'
 import Select from './Select'
 import ViewportTooltip from './ViewportTooltip'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon } from './icons'
-import CustomProviderModal from './settings/CustomProviderModal'
 import ZipDownloadRouteModal, { ZIP_DOWNLOAD_ROUTE_OPTIONS } from './settings/ZipDownloadRouteModal'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
 const modelSelectOptions = IMAGE_MODEL_OPTIONS.map((model) => ({ label: model, value: model }))
-
-interface CustomProviderForm {
-  json: string
-}
-
-const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
-  name: '自定义服务商',
-  submit: {
-    path: 'images/generations',
-    method: 'POST',
-    contentType: 'json',
-    body: {
-      model: '$profile.model',
-      prompt: '$prompt',
-      size: '$params.size',
-      quality: '$params.quality',
-      output_format: '$params.output_format',
-      moderation: '$params.moderation',
-      output_compression: '$params.output_compression',
-      n: '$params.n',
-      response_format: 'b64_json',
-    },
-    result: {
-      imageUrlPaths: ['data.*.url'],
-      b64JsonPaths: ['data.*.b64_json'],
-    },
-  },
-  editSubmit: {
-    path: 'images/edits',
-    method: 'POST',
-    contentType: 'multipart',
-    body: {
-      model: '$profile.model',
-      prompt: '$prompt',
-      size: '$params.size',
-      quality: '$params.quality',
-      output_format: '$params.output_format',
-      moderation: '$params.moderation',
-      output_compression: '$params.output_compression',
-      n: '$params.n',
-      response_format: 'b64_json',
-    },
-    files: [
-      { field: 'image', source: 'inputImages', array: true },
-      { field: 'mask', source: 'mask' },
-    ],
-    result: {
-      imageUrlPaths: ['data.*.url'],
-      b64JsonPaths: ['data.*.b64_json'],
-    },
-  },
-}
-
-function createDefaultCustomProviderForm(): CustomProviderForm {
-  return {
-    json: JSON.stringify(DEFAULT_CUSTOM_PROVIDER_MANIFEST, null, 2),
-  }
-}
-
-function customProviderToForm(provider: CustomProviderDefinition): CustomProviderForm {
-  return {
-    json: JSON.stringify({
-      name: provider.name,
-      submit: provider.submit,
-      editSubmit: provider.editSubmit,
-      poll: provider.poll,
-    }, null, 2),
-  }
-}
-
-function customProviderFormToInput(form: CustomProviderForm) {
-  return JSON.parse(form.json)
-}
-
-function isPristineNewOpenAIProfile(profile: ApiProfile) {
-  return profile.name === '新配置' &&
-    profile.provider === 'openai' &&
-    profile.baseUrl === DEFAULT_SETTINGS.baseUrl &&
-    profile.apiKey === '' &&
-    profile.model === DEFAULT_IMAGES_MODEL &&
-    profile.timeout === DEFAULT_SETTINGS.timeout &&
-    profile.codexCli === DEFAULT_CODEX_CLI &&
-    profile.apiProxy === false
-}
-
-function getImportedProfileFromMergedSettings(
-  nextSettings: AppSettings,
-  previousProfileIds: Set<string>,
-  importedSettings: { customProviders: CustomProviderDefinition[], profiles: ApiProfile[] },
-) {
-  const existingProfile = importedSettings.profiles
-    .map((profile) => findEquivalentApiProfile(nextSettings, profile, importedSettings.customProviders))
-    .find((profile): profile is ApiProfile => profile != null && previousProfileIds.has(profile.id))
-  if (existingProfile) return existingProfile
-
-  return nextSettings.profiles.find((profile) => !previousProfileIds.has(profile.id)) ?? nextSettings.profiles[0]
-}
-
-const CUSTOM_PROVIDER_LLM_PROMPT = `# 角色
-你是 API 文档解析助手。你的任务是根据用户提供的图像生成 API 文档，生成本应用可导入的自定义服务商配置 JSON。
-
-# 工作流程
-1. 先向用户索要 API 文档链接或完整文档文本。
-2. 如果当前环境支持读取链接，主动读取；否则要求用户粘贴文档内容。
-3. 在未获得文档前不要猜测，不要生成占位配置。
-4. 从文档中判断提交接口、图生图接口、异步任务查询接口、状态值、结果图片路径。
-5. 如果文档中明确了 API Base URL，在 profiles 中填入；model 只能使用 "gpt-image-2" 或 "gpt-image-2-pro"，其他模型统一写 "gpt-image-2"；如果未明确 API Base URL，baseUrl 留空，由用户稍后填写。
-6. 输出最终 JSON；不要索要 API Key。
-
-# 输出结构
-输出 JSON 包含两个顶层字段：
-- customProviders：自定义服务商 Manifest 数组，每项描述一个服务商的接口映射规则。
-- profiles：API 配置数组，每项描述一个可直接使用的连接配置，引用 customProviders 中的服务商。
-
-## customProviders 元素（Manifest）
-每个元素的顶层字段：id、name、submit、editSubmit、poll。
-id 是服务商的唯一标识，用于 profiles 中的 provider 字段引用，建议使用 custom-{英文短名} 格式。
-submit 是文生图提交配置，必填。
-editSubmit 是图生图或局部重绘提交配置，可选。如果文生图和图生图使用同一个 JSON 接口，可以省略 editSubmit，并在 submit.body 中加入 image_urls。
-poll 是异步任务查询配置，可选；同步接口不要写 poll。
-
-submit/editSubmit 字段：
-- path：接口路径，不带开头斜杠，不带 /v1/ 前缀，例如 images/generations 或 tasks/{task_id}。
-- method：GET 或 POST，默认 POST。
-- contentType：json 或 multipart。
-- query：提交 query 参数对象，可选，例如 {"async":"true"}。
-- body：请求体模板对象。
-- files：multipart 文件字段数组，仅 contentType=multipart 时使用。
-- taskIdPath：提交响应里的任务 ID JSON 路径；同步接口不要写。
-- result：同步响应图片提取规则。
-
-poll 字段：
-- path：任务查询路径，使用 {task_id} 占位，例如 images/tasks/{task_id} 或 tasks/{task_id}。
-- method：GET 或 POST，默认 GET。
-- query：查询 query 参数对象，可选。
-- intervalSeconds：轮询间隔秒数。
-- statusPath：查询响应状态字段路径。
-- successValues：成功状态值数组。
-- failureValues：失败状态值数组。
-- errorPath：失败原因路径，可选。
-- result：成功后图片提取规则。
-
-result 字段：
-- imageUrlPaths：图片 URL 路径数组，支持 * 通配数组。例如 data.*.url、data.result.images.*.url.*。
-- b64JsonPaths：base64 图片路径数组，支持 * 通配数组。例如 data.*.b64_json。
-
-body 模板变量：
-- $profile.model：用户在设置里选择的模型 ID，仅支持 gpt-image-2 或 gpt-image-2-pro。
-- $prompt：当前提示词。
-- $params.size、$params.quality、$params.output_format、$params.output_compression、$params.moderation、$params.n：应用内参数。
-- $inputImages.dataUrls：参考图 data URL 数组；没有参考图时会自动省略该字段。
-- $mask.dataUrl：遮罩图 data URL；没有遮罩时会自动省略该字段。
-
-multipart files 示例：
-- {"field":"image","source":"inputImages","array":true}
-- {"field":"mask","source":"mask"}
-
-## profiles 元素
-每个元素的字段：
-- name：配置名称，方便用户识别。
-- provider：对应 customProviders 中某个元素的 id。
-- baseUrl：API Base URL。如果文档明确给出，填入完整基础地址；否则留空字符串 ""。
-- model：模型 ID，仅支持 "gpt-image-2" 或 "gpt-image-2-pro"；如果文档给出其他模型，仍使用 "gpt-image-2"。
-
-profiles 中不要包含 apiKey（用户导入后自行填写）。
-
-# 输出要求
-- 最终回复只包含一个 \`\`\`json 代码块，代码块内是 JSON 对象。
-- JSON 对象必须包含 customProviders 和 profiles 两个顶层字段。
-- 代码块外不要附加解释文字。
-- 不要输出 API Key、Authorization header。
-- 如果文档返回 task_id，就必须配置 taskIdPath 和 poll。
-- 如果结果 URL 是数组，路径必须写到数组元素，例如 data.result.images.*.url.*。
-
-## 同步接口示例
-{"customProviders":[{"id":"custom-example-sync","name":"示例同步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n","response_format":"b64_json"},"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","quality":"$params.quality","output_format":"$params.output_format","moderation":"$params.moderation","output_compression":"$params.output_compression","n":"$params.n","response_format":"b64_json"},"files":[{"field":"image","source":"inputImages","array":true},{"field":"mask","source":"mask"}],"result":{"imageUrlPaths":["data.*.url"],"b64JsonPaths":["data.*.b64_json"]}}}],"profiles":[{"name":"示例同步服务商","provider":"custom-example-sync","baseUrl":"https://api.example.com/v1","model":"gpt-image-2",}]}
-
-## 异步接口示例
-{"customProviders":[{"id":"custom-example-async","name":"示例异步服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n","response_format":"b64_json"},"taskIdPath":"data"},"editSubmit":{"path":"images/edits","method":"POST","contentType":"multipart","query":{"async":"true"},"body":{"model":"$profile.model","prompt":"$prompt","size":"$params.size","n":"$params.n","response_format":"b64_json"},"files":[{"field":"image","source":"inputImages","array":true}],"taskIdPath":"data"},"poll":{"path":"images/tasks/{task_id}","method":"GET","intervalSeconds":5,"statusPath":"data.status","successValues":["SUCCESS"],"failureValues":["FAILURE"],"errorPath":"data.fail_reason","result":{"imageUrlPaths":["data.data.data.*.url"],"b64JsonPaths":["data.data.data.*.b64_json"]}}}],"profiles":[{"name":"示例异步服务商","provider":"custom-example-async","baseUrl":"","model":"gpt-image-2",}]}
-
-## 统一任务接口示例
-{"customProviders":[{"id":"custom-example-task","name":"示例任务服务商","submit":{"path":"images/generations","method":"POST","contentType":"json","body":{"model":"$profile.model","prompt":"$prompt","n":"$params.n","size":"$params.size","resolution":"2k","quality":"$params.quality","image_urls":"$inputImages.dataUrls"},"taskIdPath":"data.0.task_id"},"poll":{"path":"tasks/{task_id}","method":"GET","query":{"language":"zh"},"intervalSeconds":5,"statusPath":"data.status","successValues":["completed"],"failureValues":["failed","cancelled"],"errorPath":"data.error.message","result":{"imageUrlPaths":["data.result.images.*.url.*"],"b64JsonPaths":[]}}}],"profiles":[{"name":"示例任务服务商","provider":"custom-example-task","baseUrl":"","model":"gpt-image-2",}]}`
-
 export default function SettingsModal() {
   const showSettings = useStore((s) => s.showSettings)
   const setShowSettings = useStore((s) => s.setShowSettings)
@@ -240,7 +47,6 @@ export default function SettingsModal() {
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
   const settingsScrollBoundaryRef = useRef<HTMLDivElement>(null)
-  const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const zipDownloadRouteScrollBoundaryRef = useRef<HTMLDivElement>(null)
   
   const [draft, setDraft] = useState<AppSettings>(normalizeSettings(settings))
@@ -248,11 +54,7 @@ export default function SettingsModal() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [profileMenuMaxHeight, setProfileMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
-  const [showCustomProviderImport, setShowCustomProviderImport] = useState(false)
   const [showZipDownloadRouteManager, setShowZipDownloadRouteManager] = useState(false)
-  const [editingCustomProviderId, setEditingCustomProviderId] = useState<string | null>(null)
-  const [customProviderForm, setCustomProviderForm] = useState<CustomProviderForm>(createDefaultCustomProviderForm())
-  const [customProviderImportError, setCustomProviderImportError] = useState<string | null>(null)
   const [profileImportUrlTooltipVisible, setProfileImportUrlTooltipVisible] = useState(false)
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'data'>('general')
   const [exportConfig, setExportConfig] = useState(true)
@@ -267,30 +69,11 @@ export default function SettingsModal() {
   const apiProxyAvailable = isApiProxyAvailable(readClientDevProxyConfig())
   const activeProfile = draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? getActiveApiProfile(draft)
   const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && activeProfile.apiProxy
-  const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
-  const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
   const activeModel = normalizeImageModel(activeProfile.model)
   const enabledZipDownloadRouteCount = ZIP_DOWNLOAD_ROUTE_OPTIONS.filter((option) => draft.zipDownloadRoutes.includes(option.route)).length
   const zipDownloadRouteSummary = enabledZipDownloadRouteCount
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
-  const providerOptions = [
-    { label: '创建自定义服务商', value: ADD_CUSTOM_PROVIDER_VALUE, variant: 'action' as const },
-    { label: 'OpenAI 兼容接口', value: 'openai' },
-    ...draft.customProviders.map((provider) => ({
-      label: provider.name,
-      value: provider.id,
-      actions: [
-        { label: '编辑', onClick: () => openEditCustomProvider(provider) },
-        {
-          label: '删除',
-          variant: 'danger' as const,
-          onClick: () => confirmDeleteCustomProvider(provider),
-        },
-      ],
-    })),
-  ]
-
   const wasSettingsOpenRef = useRef(false)
 
   useEffect(() => {
@@ -354,15 +137,13 @@ export default function SettingsModal() {
 
   const commitSettings = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
-      const normalizedBaseUrl = normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
       return {
         ...profile,
         name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
-        baseUrl: normalizedBaseUrl,
+        baseUrl: DEFAULT_SETTINGS.baseUrl,
         model: normalizeImageModel(profile.model),
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
-        apiProxy: profile.provider === 'openai' && apiProxyAvailable ? profile.apiProxy : false,
-        codexCli: profile.provider === 'openai' ? profile.codexCli : false,
+        apiProxy: apiProxyAvailable ? profile.apiProxy : false,
       }
     })
     const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
@@ -386,7 +167,7 @@ export default function SettingsModal() {
 
   const copyProfileImportUrl = async (profile: ApiProfile, includeApiKey: boolean) => {
     try {
-      await copyTextToClipboard(createProfileImportUrl(window.location.href, profile, draft.customProviders, includeApiKey))
+      await copyTextToClipboard(createProfileImportUrl(window.location.href, profile, includeApiKey))
       showToast(includeApiKey ? '导入 URL 已复制（包含 API Key）' : '导入 URL 已复制', 'success')
     } catch (err) {
       showToast(getClipboardFailureMessage('复制导入 URL 失败', err), 'error')
@@ -445,18 +226,15 @@ export default function SettingsModal() {
         : nextTimeout
     const nextDraft = {
       ...draft,
-      profiles: activeProviderIsOpenAICompatible
-        ? draft.profiles.map((profile) =>
-            profile.id === activeProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
-          )
-        : draft.profiles,
+      profiles: draft.profiles.map((profile) =>
+        profile.id === activeProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
+      ),
     }
     commitSettings(nextDraft)
     setShowSettings(false)
   }
 
   const commitTimeout = useCallback(() => {
-    if (!isOpenAICompatibleProvider(draft, activeProfile.provider)) return
     const nextTimeout = Number(timeoutInput)
     const normalizedTimeout =
       timeoutInput.trim() === '' ? DEFAULT_SETTINGS.timeout : Number.isNaN(nextTimeout) ? activeProfile.timeout : nextTimeout
@@ -491,7 +269,7 @@ export default function SettingsModal() {
   }
 
   useCloseOnEscape(showSettings && !dataTransferMode, handleClose)
-  usePreventBackgroundScroll(showSettings, showZipDownloadRouteManager ? zipDownloadRouteScrollBoundaryRef : showCustomProviderImport ? customProviderScrollBoundaryRef : settingsScrollBoundaryRef)
+  usePreventBackgroundScroll(showSettings, showZipDownloadRouteManager ? zipDownloadRouteScrollBoundaryRef : settingsScrollBoundaryRef)
 
   if (!showSettings) return null
 
@@ -556,163 +334,6 @@ export default function SettingsModal() {
       activeProfileId: draft.activeProfileId === id ? nextProfiles[0].id : draft.activeProfileId,
     })
     commitSettings(nextDraft)
-  }
-
-  const handleProviderTypeChange = (value: string | number) => {
-    if (value === ADD_CUSTOM_PROVIDER_VALUE) {
-      setEditingCustomProviderId(null)
-      setCustomProviderForm(createDefaultCustomProviderForm())
-      setShowCustomProviderImport(true)
-      setCustomProviderImportError(null)
-      return
-    }
-
-    const provider = String(value) as ApiProfile['provider']
-    const customProvider = draft.customProviders.find((item) => item.id === provider)
-    updateActiveProfile(switchApiProfileProvider(activeProfile, provider, customProvider), true)
-  }
-
-  const updateCustomProviderForm = (patch: Partial<CustomProviderForm>) => {
-    setCustomProviderForm((current) => ({ ...current, ...patch }))
-    setCustomProviderImportError(null)
-  }
-
-  const buildCustomProviderFromForm = () => {
-    const input = customProviderFormToInput(customProviderForm)
-    const usedIds = new Set(
-      draft.customProviders
-        .filter((item) => item.id !== editingCustomProviderId)
-        .map((item) => item.id),
-    )
-    const provider = normalizeCustomProviderDefinition(
-      editingCustomProviderId && input && typeof input === 'object'
-        ? { ...input, id: editingCustomProviderId }
-        : input,
-      usedIds,
-    )
-    if (!provider) throw new Error('自定义服务商配置无效')
-    return provider
-  }
-
-  function openEditCustomProvider(provider: CustomProviderDefinition) {
-    setEditingCustomProviderId(provider.id)
-    setCustomProviderForm(customProviderToForm(provider))
-    setShowCustomProviderImport(true)
-    setCustomProviderImportError(null)
-  }
-
-  const saveCustomProvider = () => {
-    try {
-      const customProvider = buildCustomProviderFromForm()
-      if (editingCustomProviderId) {
-        const nextDraft = normalizeSettings({
-          ...draft,
-          customProviders: draft.customProviders.map((provider) =>
-            provider.id === editingCustomProviderId ? customProvider : provider,
-          ),
-        })
-        commitSettings(nextDraft)
-        setShowCustomProviderImport(false)
-        setEditingCustomProviderId(null)
-        setCustomProviderImportError(null)
-        showToast('服务商配置已更新', 'success')
-        return
-      }
-
-      const nextProfile = switchApiProfileProvider(activeProfile, customProvider.id, customProvider)
-      const nextDraft = normalizeSettings({
-        ...draft,
-        customProviders: [...draft.customProviders, customProvider],
-        profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? nextProfile : profile),
-      })
-      commitSettings(nextDraft)
-      setShowCustomProviderImport(false)
-      setEditingCustomProviderId(null)
-      setCustomProviderImportError(null)
-    } catch (err) {
-      setCustomProviderImportError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  function confirmDeleteCustomProvider(provider: CustomProviderDefinition) {
-    setConfirmDialog({
-      title: '删除服务商',
-      message: `确定要删除自定义服务商「${provider.name}」吗？正在使用它的配置会切回 OpenAI 兼容接口。`,
-      action: () => deleteCustomProvider(provider),
-    })
-  }
-
-  function deleteCustomProvider(provider: CustomProviderDefinition) {
-    const providerId = provider.id
-    const nextDraft = normalizeSettings({
-      ...draft,
-      customProviders: draft.customProviders.filter((provider) => provider.id !== providerId),
-      profiles: draft.profiles.map((profile) =>
-        profile.provider === providerId ? switchApiProfileProvider(profile, 'openai') : profile,
-      ),
-    })
-    commitSettings(nextDraft)
-    showToast('服务商已删除', 'success')
-  }
-
-  const copyCustomProviderLlmPrompt = async () => {
-    try {
-      await copyTextToClipboard(CUSTOM_PROVIDER_LLM_PROMPT)
-      showToast('LLM 生成提示词已复制', 'success')
-    } catch (err) {
-      showToast(getClipboardFailureMessage('复制 LLM 生成提示词失败', err), 'error')
-    }
-  }
-
-  const handleCustomProviderJsonPaste = async () => {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (!text.trim()) {
-        throw new Error('剪贴板为空')
-      }
-      const imported = importCustomProviderSettingsFromJson(text, draft.customProviders)
-      if (imported.profiles.length > 0) {
-        const previousProfileIds = new Set(draft.profiles.map((profile) => profile.id))
-        const mergedDraft = mergeImportedSettings(draft, imported)
-        const importedProfile = getImportedProfileFromMergedSettings(mergedDraft, previousProfileIds, imported)
-        const importedProfileAlreadyExisted = previousProfileIds.has(importedProfile.id)
-        const shouldReplaceActiveProfile = !editingCustomProviderId && isPristineNewOpenAIProfile(activeProfile) && !importedProfileAlreadyExisted
-        const switchedToExistingProfile = !shouldReplaceActiveProfile && importedProfileAlreadyExisted
-        const nextDraft = shouldReplaceActiveProfile
-          ? normalizeSettings({
-              ...mergedDraft,
-              profiles: mergedDraft.profiles
-                .filter((profile) => profile.id === activeProfile.id || profile.id !== importedProfile.id)
-                .map((profile) => profile.id === activeProfile.id ? { ...importedProfile, id: activeProfile.id } : profile),
-              activeProfileId: activeProfile.id,
-            })
-          : normalizeSettings({
-              ...mergedDraft,
-              activeProfileId: importedProfile.id,
-            })
-        setDraft(nextDraft)
-        setSettings(nextDraft)
-        setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
-        setShowCustomProviderImport(false)
-        setEditingCustomProviderId(null)
-        setCustomProviderImportError(null)
-        showToast(shouldReplaceActiveProfile ? '已覆盖当前空配置' : switchedToExistingProfile ? '已存在相同配置，已切换到已有配置' : 'JSON 配置已导入并切换', 'success')
-        return
-      }
-
-      const provider = imported.customProviders[0]
-      setCustomProviderForm(customProviderToForm(provider))
-      setCustomProviderImportError(null)
-      showToast('JSON 配置已导入', 'success')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setCustomProviderImportError(null)
-      if (err instanceof Error && err.name === 'NotAllowedError') {
-        showToast('无法读取剪贴板，请允许浏览器访问剪贴板，或直接粘贴到输入框中', 'error')
-      } else {
-        showToast(msg, 'error')
-      }
-    }
   }
 
   const handleExport = async () => {
@@ -937,17 +558,12 @@ export default function SettingsModal() {
 
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API URL</span>
-                <Select
-                  value={activeProfile.baseUrl}
-                  onChange={(value) => {
-                    updateActiveProfile({ baseUrl: value }, true)
-                    commitActiveProfilePatch({ baseUrl: value })
-                  }}
-                  options={[
-                    { label: 'https://www.cctq.ai', value: 'https://www.cctq.ai/v1' },
-                  ]}
-                  className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                />
+                <div
+                  data-selectable-text
+                  className="w-full rounded-xl border border-gray-200/70 bg-gray-50/80 px-3 py-2.5 text-sm text-gray-700 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200"
+                >
+                  https://www.cctq.ai
+                </div>
               </div>
 
               {activeProfile.provider === 'openai' && (
@@ -987,7 +603,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    由当前部署提供同源代理，用于解决浏览器跨域限制；开启后 API URL 设置会被忽略。
+                    由当前部署提供同源代理，用于解决浏览器跨域限制；开启后请求会通过代理转发至 CCTQ API。
                   </div>
                 </div>
               )}
@@ -1041,16 +657,11 @@ export default function SettingsModal() {
                   className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  {activeCustomProvider ? (
-                    <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
-                  ) : (
-                    <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
-                  )}
+                  Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。
                 </div>
               </label>
 
-              {activeProviderIsOpenAICompatible && (
-                <label className="block">
+              <label className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">请求超时 (秒)</span>
                   <input
                     value={timeoutInput}
@@ -1061,8 +672,7 @@ export default function SettingsModal() {
                     max={600}
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
-                </label>
-              )}
+              </label>
             </div>
             )}
             
@@ -1185,22 +795,6 @@ export default function SettingsModal() {
           />
         )}
 
-        {showCustomProviderImport && (
-          <CustomProviderModal
-            editing={Boolean(editingCustomProviderId)}
-            json={customProviderForm.json}
-            error={customProviderImportError}
-            scrollBoundaryRef={customProviderScrollBoundaryRef}
-            onClose={() => {
-              setShowCustomProviderImport(false)
-              setEditingCustomProviderId(null)
-            }}
-            onCopyLlmPrompt={copyCustomProviderLlmPrompt}
-            onImportJson={handleCustomProviderJsonPaste}
-            onJsonChange={(json) => updateCustomProviderForm({ json })}
-            onSave={saveCustomProvider}
-          />
-        )}
     </div>
   )
 }

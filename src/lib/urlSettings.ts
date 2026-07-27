@@ -1,23 +1,26 @@
-import type { AppSettings } from '../types'
-import { normalizeBaseUrl } from './devProxy'
+import type { ApiProfile, AppSettings } from '../types'
 import {
   createDefaultOpenAIProfile,
   DEFAULT_IMAGES_MODEL,
   findEquivalentApiProfile,
   mergeImportedSettings,
+  normalizeApiProfile,
   normalizeImageModel,
   normalizeSettings,
 } from './apiProfiles'
 
 const URL_SETTING_KEYS = ['settings', 'apiUrl', 'apiKey', 'codexCli', 'model']
 
-function getProfileDedupKey(profile: Pick<AppSettings['profiles'][number], 'provider' | 'baseUrl' | 'apiKey' | 'model'>) {
-  return JSON.stringify([
-    profile.provider,
-    profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
-    profile.apiKey.trim(),
-    profile.model.trim(),
-  ])
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isOpenAIProfileInput(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && (value.provider == null || value.provider === 'openai')
+}
+
+function getProfileDedupKey(profile: Pick<ApiProfile, 'apiKey' | 'model'>) {
+  return JSON.stringify([profile.apiKey.trim(), profile.model.trim()])
 }
 
 function createUrlProfileId(usedIds: Set<string>) {
@@ -29,12 +32,8 @@ function createUrlProfileId(usedIds: Set<string>) {
 }
 
 function pickUrlSettingsPayload(value: unknown): unknown | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const record = value as Record<string, unknown>
-  return {
-    customProviders: record.customProviders,
-    profiles: record.profiles,
-  }
+  if (!isRecord(value)) return null
+  return { profiles: value.profiles }
 }
 
 function getUrlSettingsPayload(searchParams: URLSearchParams): unknown | null {
@@ -43,8 +42,8 @@ function getUrlSettingsPayload(searchParams: URLSearchParams): unknown | null {
 
   try {
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && 'settings' in parsed) {
-      return pickUrlSettingsPayload((parsed as { settings?: unknown }).settings ?? null)
+    if (isRecord(parsed) && 'settings' in parsed) {
+      return pickUrlSettingsPayload(parsed.settings)
     }
     return pickUrlSettingsPayload(parsed)
   } catch {
@@ -52,19 +51,16 @@ function getUrlSettingsPayload(searchParams: URLSearchParams): unknown | null {
   }
 }
 
+function getFirstImportableProfile(importedSettings: unknown): ApiProfile | null {
+  if (!isRecord(importedSettings) || !Array.isArray(importedSettings.profiles)) return null
+  const profile = importedSettings.profiles.find(isOpenAIProfileInput)
+  return profile ? normalizeApiProfile(profile) : null
+}
+
 function activateFirstImportedProfile(settings: AppSettings, importedSettings: unknown): AppSettings {
-  if (!importedSettings || typeof importedSettings !== 'object' || Array.isArray(importedSettings)) return settings
-
-  const record = importedSettings as Record<string, unknown>
-  if (!Array.isArray(record.profiles) || record.profiles.length === 0) return settings
-
-  const imported = normalizeSettings({
-    customProviders: record.customProviders,
-    profiles: record.profiles,
-  })
-  const importedProfile = imported.profiles[0]
-  const activeProfile = findEquivalentApiProfile(settings, importedProfile, imported.customProviders)
-
+  const importedProfile = getFirstImportableProfile(importedSettings)
+  if (!importedProfile) return settings
+  const activeProfile = findEquivalentApiProfile(settings, importedProfile)
   return activeProfile
     ? normalizeSettings({ ...settings, activeProfileId: activeProfile.id })
     : settings
@@ -74,30 +70,29 @@ export function hasUrlSettingParams(searchParams: URLSearchParams) {
   return URL_SETTING_KEYS.some((key) => searchParams.has(key))
 }
 
+
 export function clearUrlSettingParams(searchParams: URLSearchParams) {
   for (const key of URL_SETTING_KEYS) searchParams.delete(key)
 }
 
 export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings> | unknown, searchParams: URLSearchParams): Partial<AppSettings> {
   const importedSettings = getUrlSettingsPayload(searchParams)
-  const apiUrlParam = searchParams.get('apiUrl')
   const apiKeyParam = searchParams.get('apiKey')
   const codexCliParam = searchParams.get('codexCli')
   const modelParam = searchParams.get('model')
-  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || modelParam !== null
+  const hasProfileParams = apiKeyParam !== null || codexCliParam !== null || modelParam !== null
   const settings = importedSettings == null
     ? normalizeSettings(currentSettings)
     : activateFirstImportedProfile(mergeImportedSettings(currentSettings, importedSettings), importedSettings)
 
-  if (hasLegacyOpenAIParams) {
-
+  // apiUrl remains a recognized cleanup key for old shared links, but it can no longer affect requests.
+  if (hasProfileParams) {
     const profile = createDefaultOpenAIProfile({
       id: createUrlProfileId(new Set(settings.profiles.map((item) => item.id))),
       name: 'URL 参数配置',
       model: DEFAULT_IMAGES_MODEL,
       apiProxy: false,
     })
-    if (apiUrlParam !== null) profile.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
     if (apiKeyParam !== null) profile.apiKey = apiKeyParam.trim()
     if (modelParam !== null) profile.model = normalizeImageModel(modelParam)
     if (codexCliParam !== null) profile.codexCli = codexCliParam.trim().toLowerCase() === 'true'

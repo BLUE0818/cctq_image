@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
 import AnnouncementModal from './components/AnnouncementModal'
@@ -19,7 +18,6 @@ import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
-  useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
   useEffect(() => {

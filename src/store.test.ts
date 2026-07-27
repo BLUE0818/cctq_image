@@ -147,12 +147,12 @@ describe('interrupted OpenAI running tasks', () => {
     const legacyRunning = task({ id: 'legacy-running', status: 'running', createdAt: 1_000, finishedAt: null, elapsed: null })
     const openAIRunning = task({ id: 'openai-running', apiProvider: 'openai', status: 'running', createdAt: 2_000, finishedAt: null, elapsed: null })
     const falRunning = task({ id: 'fal-running', apiProvider: 'fal', status: 'running', createdAt: 3_000, finishedAt: null, elapsed: null })
-    const customAsyncRunning = task({ id: 'custom-running', apiProvider: 'custom-provider', customTaskId: 'task-1', status: 'running', createdAt: 4_000, finishedAt: null, elapsed: null })
+    const legacyCustomRunning = task({ id: 'custom-running', apiProvider: 'custom-provider', status: 'running', createdAt: 4_000, finishedAt: null, elapsed: null })
     const doneTask = task({ id: 'done-task', apiProvider: 'openai', status: 'done' })
 
-    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, customAsyncRunning, doneTask], now)
+    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, legacyCustomRunning, doneTask], now)
 
-    expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy-running', 'openai-running'])
+    expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy-running', 'openai-running', 'custom-running'])
     expect(result.tasks.find((item) => item.id === 'legacy-running')).toMatchObject({
       status: 'error',
       error: expect.stringContaining('请求中断'),
@@ -166,7 +166,12 @@ describe('interrupted OpenAI running tasks', () => {
       elapsed: 8_000,
     })
     expect(result.tasks.find((item) => item.id === 'fal-running')).toEqual(falRunning)
-    expect(result.tasks.find((item) => item.id === 'custom-running')).toEqual(customAsyncRunning)
+    expect(result.tasks.find((item) => item.id === 'custom-running')).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('请求中断'),
+      finishedAt: now,
+      elapsed: 6_000,
+    })
     expect(result.tasks.find((item) => item.id === 'done-task')).toEqual(doneTask)
   })
 })
@@ -209,35 +214,18 @@ describe('input persistence setting', () => {
 
 describe('reused task API profile', () => {
   const openaiProfile = createDefaultOpenAIProfile({ id: 'openai-profile', apiKey: 'openai-key' })
-  const customProvider = {
-    id: 'custom-image',
-    name: '自定义配置',
-    submit: {
-      path: 'images/generations',
-      method: 'POST' as const,
-      contentType: 'json' as const,
-      body: { model: '$profile.model', prompt: '$prompt' },
-      result: { imageUrlPaths: ['data.*.url'], b64JsonPaths: ['data.*.b64_json'] },
-    },
-  }
-  const customProfile = ({
-    id: 'custom-profile',
-    name: '自定义配置',
-    provider: customProvider.id,
-    baseUrl: 'https://www.cctq.ai/v1',
-    apiKey: 'custom-key',
-    model: 'custom-model',
-    timeout: 600,
-    codexCli: false,
-    apiProxy: false,
+  const secondaryProfile = createDefaultOpenAIProfile({
+    id: 'secondary-profile',
+    name: '备用配置',
+    apiKey: 'secondary-key',
+    model: 'gpt-image-2-pro',
   })
 
   beforeEach(() => {
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
-        customProviders: [customProvider],
-        profiles: [openaiProfile, customProfile],
+        profiles: [openaiProfile, secondaryProfile],
         activeProfileId: openaiProfile.id,
         reuseTaskApiProfileTemporarily: true,
       }),
@@ -257,16 +245,16 @@ describe('reused task API profile', () => {
   })
 
   it('resolves a task API profile by stored profile id', () => {
-    const resolved = getTaskApiProfile(useStore.getState().settings, task({ apiProvider: customProvider.id, apiProfileId: customProfile.id }))
+    const resolved = getTaskApiProfile(useStore.getState().settings, task({ apiProvider: 'openai', apiProfileId: secondaryProfile.id }))
 
-    expect(resolved?.id).toBe(customProfile.id)
+    expect(resolved?.id).toBe(secondaryProfile.id)
   })
 
   it('does not resolve a task API profile by stored name or model', () => {
     const resolved = getTaskApiProfile(useStore.getState().settings, task({
-      apiProvider: customProvider.id,
-      apiProfileName: customProfile.name,
-      apiModel: customProfile.model,
+      apiProvider: 'openai',
+      apiProfileName: secondaryProfile.name,
+      apiModel: secondaryProfile.model,
     }))
 
     expect(resolved).toBeNull()
@@ -274,25 +262,25 @@ describe('reused task API profile', () => {
 
   it('reuses the task API profile temporarily without switching the active profile', async () => {
     await reuseConfig(task({
-      apiProvider: customProvider.id,
-      apiProfileId: customProfile.id,
+      apiProvider: 'openai',
+      apiProfileId: secondaryProfile.id,
       params: { ...DEFAULT_PARAMS, n: 8, size: 'auto', quality: 'auto' },
     }))
 
     const state = useStore.getState()
     expect(state.settings.activeProfileId).toBe(openaiProfile.id)
-    expect(state.reusedTaskApiProfileId).toBe(customProfile.id)
+    expect(state.reusedTaskApiProfileId).toBe(secondaryProfile.id)
     expect(state.params).toMatchObject({ n: 8, size: 'auto', quality: 'auto' })
-    expect(state.showToast).toHaveBeenCalledWith('已临时复用该任务的 API 配置「自定义配置」', 'success')
+    expect(state.showToast).toHaveBeenCalledWith('已临时复用该任务的 API 配置「备用配置」', 'success')
   })
 
   it('clears temporary reuse when switching current settings to the reused API profile', async () => {
-    await reuseConfig(task({ apiProvider: customProvider.id, apiProfileId: customProfile.id }))
+    await reuseConfig(task({ apiProvider: 'openai', apiProfileId: secondaryProfile.id }))
 
-    useStore.getState().setSettings({ activeProfileId: customProfile.id })
+    useStore.getState().setSettings({ activeProfileId: secondaryProfile.id })
 
     const state = useStore.getState()
-    expect(state.settings.activeProfileId).toBe(customProfile.id)
+    expect(state.settings.activeProfileId).toBe(secondaryProfile.id)
     expect(state.reusedTaskApiProfileId).toBeNull()
     expect(state.reusedTaskApiProfileMissing).toBe(false)
   })
@@ -306,8 +294,8 @@ describe('reused task API profile', () => {
     })
 
     await reuseConfig(task({
-      apiProvider: customProvider.id,
-      apiProfileId: customProfile.id,
+      apiProvider: 'openai',
+      apiProfileId: secondaryProfile.id,
       params: { ...DEFAULT_PARAMS, n: 8, size: 'auto', quality: 'auto' },
     }))
 
@@ -318,7 +306,7 @@ describe('reused task API profile', () => {
   })
 
   it('asks whether to submit with current API profile when the reused API profile is missing', async () => {
-    await reuseConfig(task({ apiProvider: customProvider.id, apiProfileId: 'missing-profile' }))
+    await reuseConfig(task({ apiProvider: 'openai', apiProfileId: 'missing-profile' }))
 
     const state = useStore.getState()
     expect(state.tasks).toEqual([])
