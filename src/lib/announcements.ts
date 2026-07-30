@@ -1,10 +1,16 @@
 export type AnnouncementTone = 'muted' | 'success' | 'warning'
 
+export interface AnnouncementLink {
+  href: string
+  label: string
+}
+
 export interface TimelineAnnouncement {
   id: string
   message: string
   meta: string
   tone?: AnnouncementTone
+  link?: AnnouncementLink
   enabled?: boolean
 }
 
@@ -13,10 +19,21 @@ export interface ModalAnnouncement {
   title: string
   message: string
   confirmText?: string
+  link?: AnnouncementLink
   enabled?: boolean
 }
 
 export const modalAnnouncements: ModalAnnouncement[] = [
+  {
+    id: '20260730-154217-failed-fetch-recovery',
+    title: '生图超时与结果找回说明',
+    message: '如遇报错“Failed to fetch”，且生成时间已超过 2 分钟，这是正常现象，通常是 Cloudflare（CF）120 秒连接超时导致的。\n\n图片仍可能在后台继续生成。可前往 CCTQ 的“任务日志 → 生图记录”找回该图片。\n\n请注意：若生图记录中尚未出现，说明图片仍在生成。4K 复杂图片根据提示词难度，生成可能需要 8–15 分钟，请耐心等待，不要反复重试，否则可能产生多笔费用。',
+    link: {
+      href: 'https://www.cctq.ai/',
+      label: '前往 CCTQ 查看生图记录',
+    },
+    confirmText: '我知道了',
+  },
   {
     id: '20260711-213542-size-guidance',
     title: '尺寸相关说明',
@@ -26,6 +43,16 @@ export const modalAnnouncements: ModalAnnouncement[] = [
 ]
 
 export const timelineAnnouncements: TimelineAnnouncement[] = [
+  {
+    id: '20260730-154217-failed-fetch-recovery',
+    message: '如遇报错“Failed to fetch”，且生成时间已超过 2 分钟，这是正常现象，通常是 Cloudflare（CF）120 秒连接超时导致的。\n\n图片仍可能在后台继续生成。可前往 CCTQ 的“任务日志 → 生图记录”找回该图片。\n\n请注意：若生图记录中尚未出现，说明图片仍在生成。4K 复杂图片根据提示词难度，生成可能需要 8–15 分钟，请耐心等待，不要反复重试，否则可能产生多笔费用。',
+    meta: '2026-07-30',
+    tone: 'warning',
+    link: {
+      href: 'https://www.cctq.ai/',
+      label: '前往 CCTQ 查看生图记录',
+    },
+  },
   {
     id: '20260711-213542-size-guidance',
     message: '推荐使用自动（Auto）进行生成，如需控制比例，可以在提示词最后加入：“将宽高比设为 x:x”\n\n因Codex限制，我们无法保证每一次的尺寸都和选择相符，如：选择2048*2048，最终生成可能为1024*1024或其他尺寸，我们无法控制。遇到此情况可尝试重新生成或选择 自动 并用提示词控制比例\n\n该问题为Codex本身限制，并非出于我们，敬请谅解，也无需反馈',

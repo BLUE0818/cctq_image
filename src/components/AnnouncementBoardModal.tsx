@@ -65,6 +65,20 @@ export default function AnnouncementBoardModal({ onClose }: AnnouncementBoardMod
                     <p className="whitespace-pre-line text-sm leading-6 text-gray-700 dark:text-gray-200">
                       {announcement.message}
                     </p>
+                    {announcement.link && (
+                      <a
+                        href={announcement.link.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-blue-500 transition hover:text-blue-600 dark:text-blue-300 dark:hover:text-blue-200"
+                      >
+                        {announcement.link.label}
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M7 17 17 7" />
+                          <path d="M7 7h10v10" />
+                        </svg>
+                      </a>
+                    )}
                     <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
                       {announcement.meta}
                     </p>
