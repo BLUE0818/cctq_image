@@ -3,3 +3,5 @@ dist/
 dev-proxy.config.json
 .wrangler/
 vite-dev*.log
+.env.local
+.env.*.local

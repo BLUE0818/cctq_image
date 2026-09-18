@@ -1,5 +1,7 @@
-const CACHE_NAME = 'cctq-image-v0.6.10'
+const CACHE_NAME = 'cctq-image-v0.7.12'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
+const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
+const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -11,7 +13,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+      Promise.all(keys.filter((key) => key.startsWith('cctq-image-') && key !== CACHE_NAME).map((key) => caches.delete(key))),
     ),
   )
   self.clients.claim()
@@ -37,6 +39,8 @@ self.addEventListener('fetch', (event) => {
     )
     return
   }
+
+  if (!APP_SHELL_URLS.has(url.href) && !url.pathname.startsWith(ASSETS_PATH)) return
 
   event.respondWith(
     caches.match(request).then((cached) => {
