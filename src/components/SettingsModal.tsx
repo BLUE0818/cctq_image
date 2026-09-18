@@ -4,7 +4,6 @@ import { isApiProxyAvailable, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData } from '../store'
 import {
   createDefaultOpenAIProfile,
-  DEFAULT_CODEX_CLI,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
@@ -565,27 +564,6 @@ export default function SettingsModal() {
                   https://www.cctq.ai
                 </div>
               </div>
-
-              {activeProfile.provider === 'openai' && (
-                <div className="block">
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <span className="block text-sm text-gray-600 dark:text-gray-300">Codex CLI 兼容模式</span>
-                    <button
-                      type="button"
-                      onClick={() => updateActiveProfile({ codexCli: !activeProfile.codexCli }, true)}
-                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${activeProfile.codexCli ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      role="switch"
-                      aria-checked={activeProfile.codexCli}
-                      aria-label="Codex CLI 兼容模式"
-                    >
-                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${activeProfile.codexCli ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
-                    </button>
-                  </div>
-                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    开启后应用 Codex CLI 实际支持的参数。
-                  </div>
-                </div>
-              )}
 
               {apiProxyAvailable && activeProfile.provider === 'openai' && (
                 <div className="block">

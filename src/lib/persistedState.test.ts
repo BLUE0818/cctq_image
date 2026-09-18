@@ -65,4 +65,28 @@ describe('persistedState', () => {
     expect(merged.prompt).toBe('')
     expect(merged.inputImages).toEqual([])
   })
+
+  it('migrates legacy Codex and Pro model settings during refresh', () => {
+    const legacyProfile = {
+      ...DEFAULT_SETTINGS.profiles[0],
+      codexCli: false,
+      model: 'gpt-image-2-pro',
+    }
+    const merged = mergePersistedState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        codexCli: false,
+        model: 'gpt-image-2-pro',
+        profiles: [legacyProfile],
+        activeProfileId: legacyProfile.id,
+      },
+    }, currentState)
+
+    expect(merged.settings.codexCli).toBe(true)
+    expect(merged.settings.model).toBe('gpt-image-2')
+    expect(merged.settings.profiles[0]).toMatchObject({
+      codexCli: true,
+      model: 'gpt-image-2',
+    })
+  })
 })

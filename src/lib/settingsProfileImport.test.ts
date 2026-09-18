@@ -23,7 +23,7 @@ describe('profile import URL', () => {
     expect(url.hash).toBe('')
     expect(url.searchParams.get('apiUrl')).toBe(DEFAULT_BASE_URL)
     expect(url.searchParams.get('apiKey')).toBeNull()
-    expect(url.searchParams.get('model')).toBe('gpt-image-2-pro')
+    expect(url.searchParams.get('model')).toBe('gpt-image-2')
     expect(url.searchParams.get('codexCli')).toBe('true')
     expect(url.searchParams.get('settings')).toBeNull()
   })
