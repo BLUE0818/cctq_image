@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { TaskRecord } from '../types'
 import { resumeAsyncTask, downloadAsyncTaskResult, useStore } from '../store'
-import { asyncSlotLabel, asyncTaskLabel, canResumeSlot } from '../lib/asyncTaskState'
+import { asyncSlotLabel, asyncTaskLabel, canResumeSlot, visibleAsyncSlots } from '../lib/asyncTaskState'
 import { trustedResultUrl } from '../lib/asyncImageApi'
 import { copyTextToClipboard } from '../lib/clipboard'
 
@@ -12,8 +12,9 @@ export default function AsyncTaskPanel({ task }: { task: TaskRecord }) {
   const toast = useStore(s => s.showToast)
   const meta = task.asyncGeneration
   if (!meta) return null
+  const slots = visibleAsyncSlots(task)
   const active = task.status === 'running'
-  const resumable = meta.slots.some(canResumeSlot)
+  const resumable = slots.some(canResumeSlot)
   const fail = (error: unknown) => toast(error instanceof Error ? error.message : String(error), 'error')
   const copy = (text: string) => { void copyTextToClipboard(text).then(() => toast('已复制', 'success')).catch(fail) }
   const download = async (slot: number, result: number) => {
@@ -33,7 +34,7 @@ export default function AsyncTaskPanel({ task }: { task: TaskRecord }) {
           {busy ? '正在处理' : '查询状态'}
         </button>}
       </div>
-      {meta.slots.map(slot => (
+      {slots.map(slot => (
         <div key={slot.index} className="rounded-lg bg-gray-50 dark:bg-white/[0.03] p-2 space-y-1">
           <div className="flex flex-wrap justify-between gap-1 text-gray-600 dark:text-gray-300">
             <span>第 {slot.index + 1} 张 · {asyncSlotLabel(slot)}</span>
@@ -70,7 +71,7 @@ export default function AsyncTaskPanel({ task }: { task: TaskRecord }) {
           {slot.expiresAt && <p className="text-gray-400">远端链接有效期至 {new Date(slot.expiresAt * 1000).toLocaleString()}</p>}
         </div>
       ))}
-      {meta.slots.some(s => s.results.length > 0) && <p className="text-gray-400">链接需要原任务 Key；点击由本页鉴权下载，复制链接不包含 Key。网络故障时仍可前往 CCTQ 生图记录找回。</p>}
+      {slots.some(s => s.results.length > 0) && <p className="text-gray-400">链接需要原任务 Key；点击由本页鉴权下载，复制链接不包含 Key。网络故障时仍可前往 CCTQ 生图记录找回。</p>}
       {task.status !== 'done' && <p className="text-gray-400">删除本地记录只停止本页查询，不取消后台生成或计费。</p>}
     </section>
   )

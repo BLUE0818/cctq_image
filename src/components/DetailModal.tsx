@@ -11,7 +11,7 @@ import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from 
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
 import { CloseIcon, CopyIcon, DownloadIcon, EditIcon, TrashIcon } from './icons'
 import AsyncTaskPanel from './AsyncTaskPanel'
-import { asyncTaskLabel } from '../lib/asyncTaskState'
+import { asyncTaskLabel, visibleAsyncSlots } from '../lib/asyncTaskState'
 
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
@@ -95,7 +95,7 @@ export default function DetailModal() {
   const allInputImageIds = task?.inputImageIds ?? []
   const outputSlots = useMemo(() => {
     if (!task) return []
-    if (task.asyncGeneration) return task.asyncGeneration.slots.flatMap(slot => {
+    if (task.asyncGeneration) return visibleAsyncSlots(task).flatMap(slot => {
       const images = slot.results.filter(r => r.imageId).map(r => ({ requestIndex: slot.index,
         outputImageIndex: task.outputImages.indexOf(r.imageId!), imageId: r.imageId!, error: '', response: undefined as typeof slot.errorResponse }))
       if (images.length) return images

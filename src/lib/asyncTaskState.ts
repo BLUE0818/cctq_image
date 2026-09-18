@@ -7,6 +7,11 @@ export function isAsyncTask(task: TaskRecord) {
   return task.asyncGeneration?.protocol === 'cctq-images-v1'
 }
 
+export function visibleAsyncSlots(task: TaskRecord) {
+  return (task.asyncGeneration?.slots ?? []).filter(slot =>
+    slot.phase !== 'failed' || !task.dismissedAsyncErrorIndices?.includes(slot.index))
+}
+
 export function asyncSlotLabel(slot: AsyncImageSlot): string {
   switch (slot.phase) {
     case 'pending': return '等待提交'
@@ -30,7 +35,7 @@ export function summarizeAsyncTask(task: TaskRecord, now = Date.now()): TaskReco
   const paused = slots.some(s => s.phase === 'paused' || s.phase === 'unknown')
   const terminal = !active && !paused
   const status = active ? 'running' : paused ? 'paused' : outputImages.length ? 'done' : 'error'
-  const failures = slots.filter(s => s.phase === 'failed')
+  const failures = visibleAsyncSlots(task).filter(s => s.phase === 'failed')
   const actualParamsByImage = { ...task.actualParamsByImage }
   const revisedPromptByImage = { ...task.revisedPromptByImage }
   for (const slot of slots) for (const result of slot.results) {
@@ -68,7 +73,7 @@ export function canResumeSlot(slot: AsyncImageSlot) {
 }
 
 export function asyncTaskLabel(task: TaskRecord) {
-  const slots = task.asyncGeneration?.slots ?? []
+  const slots = visibleAsyncSlots(task)
   const completed = slots.filter(s => s.phase === 'saved').length
   if (task.status === 'done') return slots.some(s => s.phase === 'failed') ? '部分完成' : '已完成'
   if (task.status === 'paused') return '等待手动继续'

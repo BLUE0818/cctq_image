@@ -149,6 +149,8 @@ export interface TaskRecord {
   outputImages: string[]
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
   outputErrors?: TaskOutputError[]
+  /** 已手动清除的异步失败展示；保留槽位与远端 ID，不影响其他槽位继续处理。 */
+  dismissedAsyncErrorIndices?: number[]
   status: TaskStatus
   error: string | null
   errorResponse?: ApiErrorResponseSnapshot

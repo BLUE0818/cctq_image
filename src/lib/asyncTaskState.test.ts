@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pauseAsyncTask, summarizeAsyncTask } from './asyncTaskState'
+import { asyncTaskLabel, pauseAsyncTask, summarizeAsyncTask, visibleAsyncSlots } from './asyncTaskState'
 import { markInterruptedRunningTasks } from './taskState'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 
@@ -29,5 +29,17 @@ describe('async view state and refresh', () => {
   it('deduplicates saved outputs while preserving actual dimensions', () => {
     const record = task(); record.asyncGeneration!.slots = [0, 1].map(index => ({ index, phase: 'saved', results: [{ url: 'url'+index, imageId: 'hash', actualParams: { size: '1254x1254' } }] }))
     expect(summarizeAsyncTask(record)).toMatchObject({ status: 'done', outputImages: ['hash'], actualParams: { n: 1 }, actualParamsByImage: { hash: { size: '1254x1254' } } })
+  })
+  it('hides only explicitly cleared failed slots while preserving recovery metadata', () => {
+    const record = task(); record.dismissedAsyncErrorIndices = [0, 1]
+    record.asyncGeneration!.slots = [
+      { index: 0, phase: 'failed', remoteId: 'failed-id', results: [], error: 'failed' },
+      { index: 1, phase: 'saved', remoteId: 'saved-id', results: [{ url: 'url', imageId: 'hash' }] },
+    ]
+    const restored = pauseAsyncTask(record)
+    expect(visibleAsyncSlots(restored).map(s => s.index)).toEqual([1])
+    expect(restored.asyncGeneration!.slots).toHaveLength(2)
+    expect(restored.outputErrors).toEqual([])
+    expect(asyncTaskLabel(restored)).toBe('已完成')
   })
 })

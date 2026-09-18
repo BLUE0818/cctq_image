@@ -36,7 +36,7 @@ import {
 } from './lib/db'
 import { AsyncImageRuntime, browserTaskLock } from './lib/asyncImageRuntime'
 import { credentialFingerprint } from './lib/asyncImageApi'
-import { isAsyncTask, pauseAsyncTask } from './lib/asyncTaskState'
+import { isAsyncTask, pauseAsyncTask, summarizeAsyncTask, visibleAsyncSlots } from './lib/asyncTaskState'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
@@ -346,7 +346,7 @@ export function taskMatchesSearchQuery(task: TaskRecord, query: string) {
   const prompt = (task.prompt || '').toLowerCase()
   const paramStr = JSON.stringify(task.params).toLowerCase()
   const errorStr = [task.error, ...(task.outputErrors ?? []).map((item) => item.error)].filter(Boolean).join('\n').toLowerCase()
-  const asyncStr = JSON.stringify(task.asyncGeneration?.slots ?? []).toLowerCase()
+  const asyncStr = JSON.stringify(visibleAsyncSlots(task)).toLowerCase()
   return prompt.includes(q) || paramStr.includes(q) || errorStr.includes(q) || asyncStr.includes(q)
 }
 
@@ -903,11 +903,19 @@ export async function clearFailedTasks(taskIds?: string[]) {
   if (failedTaskIds.length) await removeMultipleTasks(failedTaskIds)
   if (partialFailedTaskIds.size) {
     const { tasks, setTasks, selectedTaskIds, setSelectedTaskIds, showToast } = useStore.getState()
-    const updated = tasks.map((task) => partialFailedTaskIds.has(task.id) ? { ...task, outputErrors: undefined } : task)
+    const updated = tasks.map((task) => partialFailedTaskIds.has(task.id) && !isAsyncTask(task) ? { ...task, outputErrors: undefined } : task)
     setTasks(updated)
     const nextSelectedTaskIds = selectedTaskIds.filter((id) => !partialFailedTaskIds.has(id))
     if (nextSelectedTaskIds.length !== selectedTaskIds.length) setSelectedTaskIds(nextSelectedTaskIds)
-    await Promise.all(updated.filter((task) => partialFailedTaskIds.has(task.id)).map((task) => putTask(task)))
+    await Promise.all(updated.filter((task) => partialFailedTaskIds.has(task.id)).map(async task => {
+      if (!isAsyncTask(task)) { await putTask(task); return }
+      // Read the latest record in the transaction; another slot/tab may have just saved an ID or image.
+      const saved = await commitAsyncTask(task.id, current => summarizeAsyncTask({ ...current,
+        dismissedAsyncErrorIndices: [...new Set([...(current.dismissedAsyncErrorIndices ?? []),
+          ...current.asyncGeneration!.slots.filter(s => s.phase === 'failed').map(s => s.index)])],
+      }))
+      if (saved) { receiveAsyncTask(saved); asyncChanges?.postMessage({ id: saved.id }) }
+    }))
     showToast(`已清除 ${partialFailedTaskIds.size} 条部分失败记录`, 'success')
   }
 }

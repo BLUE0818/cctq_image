@@ -118,6 +118,19 @@ describe('durable async generation lifecycle', () => {
     f.deps.commit = original
     await f.runtime.run('local'); expect(f.disk().status).toBe('done'); expect(submitAsyncImage).toHaveBeenCalledOnce()
   })
+
+  it('does not resurrect cleared failure markers when a sibling subsequently finishes', async () => {
+    const f = await fixture(2); let i = 0
+    vi.mocked(submitAsyncImage).mockImplementation(async () => ({ id: 'r'+i++, status: 'queued' }))
+    const slow = deferred<Awaited<ReturnType<typeof queryAsyncImage>>>()
+    vi.mocked(queryAsyncImage).mockImplementation(async id => id === 'r0' ? { status: 'failed', error: 'failed', results: [] } : slow.promise)
+    const op = f.runtime.run('local', initial); await flush(); await vi.advanceTimersByTimeAsync(5000)
+    await f.deps.commit('local', current => summarizeAsyncTask({ ...current, dismissedAsyncErrorIndices: [0] }))
+    slow.resolve(completed('r1')); await op
+    expect(f.disk().status).toBe('done')
+    expect(f.disk().outputErrors).toEqual([])
+    expect(f.disk().asyncGeneration!.slots[0].remoteId).toBe('r0')
+  })
   it('does not mark a failed image transaction as saved and can recover it', async () => {
     const f = await fixture(); const original = f.deps.commit
     f.deps.commit = vi.fn(async (id, change, image) => { if (image) throw new Error('quota'); return original(id, change, image) })

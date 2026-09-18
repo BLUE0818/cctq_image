@@ -4,6 +4,7 @@ import { DEFAULT_PARAMS, type ExportData } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import * as db from './lib/db'
 import { callImageApi } from './lib/api'
+import { pauseAsyncTask } from './lib/asyncTaskState'
 import type { TaskRecord } from './types'
 import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, importData, markInterruptedRunningTasks, removeMultipleTasks, removeTask, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -384,6 +385,31 @@ describe('failed task cleanup', () => {
     expect(state.tasks[0]).toMatchObject({ id: 'partial-task', outputImages: ['done-image-a'], outputErrors: undefined })
     expect(state.selectedTaskIds).toEqual([])
     expect(state.showToast).toHaveBeenCalledWith('已清除 1 条部分失败记录', 'success')
+  })
+
+  it('keeps cleared async failures cleared after refresh without losing IDs or newer results', async () => {
+    vi.mocked(db.putTask).mockClear()
+    const partial = task({ id: 'async-partial', status: 'paused', outputImages: ['saved-image'],
+      outputErrors: [{ requestIndex: 0, error: 'remote failure' }],
+      asyncGeneration: { protocol: 'cctq-images-v1', credentialFingerprint: 'digest', slots: [
+        { index: 0, phase: 'failed', remoteId: 'failed-id', results: [], error: 'remote failure' },
+        { index: 1, phase: 'saved', remoteId: 'saved-id', results: [{ url: 'url', imageId: 'saved-image' }] },
+        { index: 2, phase: 'paused', remoteId: 'waiting-id', results: [] },
+      ] } })
+    const disk = structuredClone(partial)
+    disk.asyncGeneration!.slots[2] = { index: 2, phase: 'saved', remoteId: 'waiting-id', results: [{ url: 'url2', imageId: 'new-image' }] }
+    vi.mocked(db.commitAsyncTask).mockImplementationOnce(async (_id, change) => change(disk))
+    useStore.setState({ tasks: [partial], selectedTaskIds: ['async-partial'] })
+
+    await clearFailedTasks(['async-partial'])
+
+    const restored = pauseAsyncTask(useStore.getState().tasks[0])
+    expect(restored.outputErrors ?? []).toEqual([])
+    expect(restored.outputImages).toEqual(['saved-image', 'new-image'])
+    expect(restored.asyncGeneration!.slots.map(s => s.remoteId)).toEqual(['failed-id', 'saved-id', 'waiting-id'])
+    expect(taskMatchesFilterStatus(restored, 'error')).toBe(false)
+    expect(taskMatchesSearchQuery(restored, 'remote failure')).toBe(false)
+    expect(db.putTask).not.toHaveBeenCalled()
   })
 })
 
