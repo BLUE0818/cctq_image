@@ -4,6 +4,7 @@ import { DEFAULT_PARAMS, type ExportData } from './types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import * as db from './lib/db'
 import { callImageApi } from './lib/api'
+import { pauseAsyncTask } from './lib/asyncTaskState'
 import type { TaskRecord } from './types'
 import { clearFailedTasks, editOutputs, getPersistedState, getTaskApiProfile, importData, markInterruptedRunningTasks, removeMultipleTasks, removeTask, reuseConfig, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -11,9 +12,18 @@ vi.mock('./lib/api', () => ({
   callImageApi: vi.fn(),
 }))
 
+const asyncMock = vi.hoisted(() => ({ run: vi.fn(async () => {}), cancel: vi.fn(), cancelAll: vi.fn(), isRunning: vi.fn(() => false), hasRescue: vi.fn(() => false) }))
+vi.mock('./lib/asyncImageRuntime', () => ({
+  AsyncImageRuntime: class { run = asyncMock.run; cancel = asyncMock.cancel; cancelAll = asyncMock.cancelAll; isRunning = asyncMock.isRunning; hasRescue = asyncMock.hasRescue },
+  browserTaskLock: vi.fn(),
+}))
+
 vi.mock('./lib/db', () => ({
   CURRENT_THUMBNAIL_VERSION: 1,
   getAllTasks: vi.fn(async () => []),
+  getTask: vi.fn(async () => undefined),
+  commitAsyncTask: vi.fn(async () => undefined),
+  hashDataUrl: vi.fn(async () => 'hash'),
   putTask: vi.fn(async () => undefined),
   deleteTask: vi.fn(async () => undefined),
   commitTaskDeletion: vi.fn(async () => undefined),
@@ -376,6 +386,31 @@ describe('failed task cleanup', () => {
     expect(state.selectedTaskIds).toEqual([])
     expect(state.showToast).toHaveBeenCalledWith('已清除 1 条部分失败记录', 'success')
   })
+
+  it('keeps cleared async failures cleared after refresh without losing IDs or newer results', async () => {
+    vi.mocked(db.putTask).mockClear()
+    const partial = task({ id: 'async-partial', status: 'paused', outputImages: ['saved-image'],
+      outputErrors: [{ requestIndex: 0, error: 'remote failure' }],
+      asyncGeneration: { protocol: 'cctq-images-v1', credentialFingerprint: 'digest', slots: [
+        { index: 0, phase: 'failed', remoteId: 'failed-id', results: [], error: 'remote failure' },
+        { index: 1, phase: 'saved', remoteId: 'saved-id', results: [{ url: 'url', imageId: 'saved-image' }] },
+        { index: 2, phase: 'paused', remoteId: 'waiting-id', results: [] },
+      ] } })
+    const disk = structuredClone(partial)
+    disk.asyncGeneration!.slots[2] = { index: 2, phase: 'saved', remoteId: 'waiting-id', results: [{ url: 'url2', imageId: 'new-image' }] }
+    vi.mocked(db.commitAsyncTask).mockImplementationOnce(async (_id, change) => change(disk))
+    useStore.setState({ tasks: [partial], selectedTaskIds: ['async-partial'] })
+
+    await clearFailedTasks(['async-partial'])
+
+    const restored = pauseAsyncTask(useStore.getState().tasks[0])
+    expect(restored.outputErrors ?? []).toEqual([])
+    expect(restored.outputImages).toEqual(['saved-image', 'new-image'])
+    expect(restored.asyncGeneration!.slots.map(s => s.remoteId)).toEqual(['failed-id', 'saved-id', 'waiting-id'])
+    expect(taskMatchesFilterStatus(restored, 'error')).toBe(false)
+    expect(taskMatchesSearchQuery(restored, 'remote failure')).toBe(false)
+    expect(db.putTask).not.toHaveBeenCalled()
+  })
 })
 
 describe('task deletion', () => {
@@ -461,28 +496,26 @@ describe('task deletion', () => {
     expect(useStore.getState().tasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
   })
 
-  it('removes output images that arrive after the task is deleted', async () => {
-    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const imageStore = deferred<string>()
-    vi.mocked(callImageApi).mockReturnValueOnce(request.promise)
-    vi.mocked(db.storeImage).mockReturnValueOnce(imageStore.promise)
-
+  it('starts the new async runtime only after persisting the task and cancels it on deletion', async () => {
     await submitTask()
-    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(asyncMock.run).toHaveBeenCalledOnce())
     const running = useStore.getState().tasks[0]
-    request.resolve({
-      images: ['late-output'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    await vi.waitFor(() => expect(db.storeImage).toHaveBeenCalledWith('late-output', 'generated'))
+    expect(running.asyncGeneration).toMatchObject({ protocol: 'cctq-images-v1', slots: [{ phase: 'pending' }] })
+    expect(db.putTask).toHaveBeenCalledWith(running)
+    expect(vi.mocked(db.putTask).mock.invocationCallOrder[0]).toBeLessThan(asyncMock.run.mock.invocationCallOrder[0])
+    expect(callImageApi).not.toHaveBeenCalled()
     await removeTask(running)
-    imageStore.resolve('late-output')
-
-    await vi.waitFor(() => expect(db.deleteImage).toHaveBeenCalledWith('late-output'))
+    expect(asyncMock.cancel).toHaveBeenCalledWith(running.id)
     expect(useStore.getState().tasks).toEqual([])
     expect(useStore.getState().detailTaskId).toBeNull()
+  })
+
+  it('does not submit when the initial local task cannot commit', async () => {
+    vi.mocked(db.putTask).mockRejectedValueOnce(new Error('quota'))
+    await submitTask()
+    expect(asyncMock.run).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('未发送'), 'error')
   })
 
   it('restores an image when a new reference appears during deletion', async () => {

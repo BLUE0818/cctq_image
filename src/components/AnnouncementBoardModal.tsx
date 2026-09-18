@@ -62,6 +62,11 @@ export default function AnnouncementBoardModal({ onClose }: AnnouncementBoardMod
                     <span className={`relative mt-1 h-2.5 w-2.5 rounded-full ${markerClassByTone[tone]}`} />
                   </div>
                   <div className="pb-5">
+                    {announcement.title && (
+                      <h4 className="mb-1 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                        {announcement.title}
+                      </h4>
+                    )}
                     <p className="whitespace-pre-line text-sm leading-6 text-gray-700 dark:text-gray-200">
                       {announcement.message}
                     </p>

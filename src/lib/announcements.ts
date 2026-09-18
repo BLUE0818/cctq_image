@@ -7,6 +7,7 @@ export interface AnnouncementLink {
 
 export interface TimelineAnnouncement {
   id: string
+  title?: string
   message: string
   meta: string
   tone?: AnnouncementTone
@@ -23,7 +24,17 @@ export interface ModalAnnouncement {
   enabled?: boolean
 }
 
+const asyncGenerationAnnouncement = {
+  id: '20260918-181117-async-generation',
+  title: '网站已全面使用异步生成',
+  message: '网站已全面使用异步生成，基本可杜绝超过120s报错Failed to fetch，需要到网站取图的情况',
+}
+
 export const modalAnnouncements: ModalAnnouncement[] = [
+  {
+    ...asyncGenerationAnnouncement,
+    confirmText: '我知道了',
+  },
   {
     id: '20260730-154217-failed-fetch-recovery',
     title: '生图超时与结果找回说明',
@@ -43,6 +54,11 @@ export const modalAnnouncements: ModalAnnouncement[] = [
 ]
 
 export const timelineAnnouncements: TimelineAnnouncement[] = [
+  {
+    ...asyncGenerationAnnouncement,
+    meta: '2026-09-18',
+    tone: 'success',
+  },
   {
     id: '20260730-154217-failed-fetch-recovery',
     message: '如遇报错“Failed to fetch”，且生成时间已超过 2 分钟，这是正常现象，通常是 Cloudflare（CF）120 秒连接超时导致的。\n\n图片仍可能在后台继续生成。可前往 CCTQ 的“任务日志 → 生图记录”找回该图片。\n\n请注意：若生图记录中尚未出现，说明图片仍在生成。4K 复杂图片根据提示词难度，生成可能需要 8–15 分钟，请耐心等待，不要反复重试，否则可能产生多笔费用。',

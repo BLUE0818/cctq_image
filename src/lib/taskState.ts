@@ -1,4 +1,5 @@
 import type { TaskParams, TaskRecord } from '../types'
+import { isAsyncTask, pauseAsyncTask } from './asyncTaskState'
 
 type ActualParams = Partial<TaskParams>
 type TaskLifecyclePatch = Pick<TaskRecord, 'status' | 'error' | 'finishedAt' | 'elapsed'>
@@ -28,6 +29,8 @@ export function createTaskErrorPatch(
 export function markInterruptedRunningTasks(tasks: TaskRecord[], now: number) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
+    // In-memory refresh view only; another tab may own a live polling lock.
+    if (isAsyncTask(task)) return pauseAsyncTask(task)
     if (task.status !== 'running') return task
 
     const updated: TaskRecord = {

@@ -42,8 +42,9 @@ function dbTransaction<T>(
         const tx = db.transaction(storeName, mode)
         const store = tx.objectStore(storeName)
         const req = fn(store)
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
+        tx.oncomplete = () => { db.close(); resolve(req.result) }
+        tx.onerror = () => { db.close(); reject(tx.error ?? req.error) }
+        tx.onabort = () => { db.close(); reject(tx.error ?? new Error('数据库事务已中断')) }
       }),
   )
 }
@@ -52,6 +53,37 @@ function dbTransaction<T>(
 
 export function getAllTasks(): Promise<TaskRecord[]> {
   return dbTransaction(STORE_TASKS, 'readonly', (s) => s.getAll())
+}
+
+export function getTask(id: string): Promise<TaskRecord | undefined> {
+  return dbTransaction(STORE_TASKS, 'readonly', s => s.get(id))
+}
+
+/** Read latest state and save image + task reference in the SAME transaction.
+ * Missing/deleted tasks are never recreated by a late result. */
+export async function commitAsyncTask(
+  id: string,
+  change: (task: TaskRecord) => TaskRecord,
+  image?: StoredImage,
+): Promise<TaskRecord | undefined> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_TASKS, STORE_IMAGES], 'readwrite')
+    let result: TaskRecord | undefined
+    const store = tx.objectStore(STORE_TASKS)
+    const request = store.get(id)
+    request.onsuccess = () => {
+      if (!request.result) return
+      try {
+        result = change(request.result)
+        if (image) tx.objectStore(STORE_IMAGES).put(image)
+        store.put(result)
+      } catch { tx.abort() }
+    }
+    tx.oncomplete = () => { db.close(); resolve(result) }
+    tx.onerror = () => { db.close(); reject(tx.error) }
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('保存事务已中断')) }
+  })
 }
 
 export function putTask(task: TaskRecord): Promise<IDBValidKey> {

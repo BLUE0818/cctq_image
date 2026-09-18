@@ -16,6 +16,9 @@ import { moveDraftImage, orderImagesWithMaskFirst, removeDraftImage, replaceDraf
 import { encodePersistedState, mergePersistedState } from './lib/persistedState'
 import {
   getAllTasks,
+  getTask,
+  commitAsyncTask,
+  hashDataUrl,
   putTask,
   deleteTask as dbDeleteTask,
   commitTaskDeletion,
@@ -31,13 +34,14 @@ import {
   clearImages,
   storeImage,
 } from './lib/db'
-import { callImageApi } from './lib/api'
-import { getApiErrorResponseSnapshot } from './lib/imageApiShared'
+import { AsyncImageRuntime, browserTaskLock } from './lib/asyncImageRuntime'
+import { credentialFingerprint } from './lib/asyncImageApi'
+import { isAsyncTask, pauseAsyncTask, summarizeAsyncTask, visibleAsyncSlots } from './lib/asyncTaskState'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { hasActiveDataOperations } from './lib/dataOperations'
-import { formatExportFileTime } from './lib/downloadImages'
+import { formatExportFileTime, downloadImageIds } from './lib/downloadImages'
 import {
   buildExportZip,
   createExportBlob,
@@ -58,10 +62,6 @@ import {
   scheduleThumbnailBackfill,
 } from './lib/imageCache'
 import {
-  createTaskDonePatch,
-  createTaskErrorPatch,
-  mapActualParamsByImage,
-  mapRevisedPromptsByImage,
   markInterruptedRunningTasks,
 } from './lib/taskState'
 
@@ -72,12 +72,6 @@ export {
   subscribeImageThumbnail,
 } from './lib/imageCache'
 export { markInterruptedRunningTasks } from './lib/taskState'
-
-const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function createOpenAITimeoutError(timeoutSeconds: number) {
-  return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
-}
 
 export function getPersistedState(state: AppState) {
   return encodePersistedState(state)
@@ -335,47 +329,13 @@ export function getCodexCliPromptKey(settings: AppSettings): string {
   return `${profile.baseUrl}\n${profile.apiKey}`
 }
 
-function isRunningOpenAITask(task: TaskRecord) {
-  return task.status === 'running'
-}
-
-function clearOpenAIWatchdogTimer(taskId: string) {
-  const timer = openAIWatchdogTimers.get(taskId)
-  if (timer) clearTimeout(timer)
-  openAIWatchdogTimers.delete(taskId)
-}
-
-function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.now()) {
-  const task = useStore.getState().tasks.find((item) => item.id === taskId)
-  if (!task || !isRunningOpenAITask(task)) return false
-
-  updateTaskInStore(taskId, {
-    ...createTaskErrorPatch(task, error, now),
-  })
-  return true
-}
-
-function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number) {
-  clearOpenAIWatchdogTimer(taskId)
-  const task = useStore.getState().tasks.find((item) => item.id === taskId)
-  if (!task || !isRunningOpenAITask(task)) return
-
-  const timeoutMs = Math.max(0, timeoutSeconds * 1000)
-  const remainingMs = Math.max(0, timeoutMs - (Date.now() - task.createdAt))
-  const timer = setTimeout(() => {
-    openAIWatchdogTimers.delete(taskId)
-    const failed = failOpenAITaskIfStillRunning(taskId, createOpenAITimeoutError(timeoutSeconds))
-    if (failed) useStore.getState().showToast('OpenAI 任务请求超时', 'error')
-  }, remainingMs)
-  openAIWatchdogTimers.set(taskId, timer)
-}
-
 export function taskHasOutputErrors(task: Pick<TaskRecord, 'outputErrors'>) {
   return Boolean(task.outputErrors?.length)
 }
 
 export function taskMatchesFilterStatus(task: TaskRecord, filterStatus: AppState['filterStatus']) {
   if (filterStatus === 'all') return true
+  if (filterStatus === 'running') return task.status === 'running' || task.status === 'paused'
   if (filterStatus === 'error') return task.status === 'error' || taskHasOutputErrors(task)
   return task.status === filterStatus
 }
@@ -386,7 +346,8 @@ export function taskMatchesSearchQuery(task: TaskRecord, query: string) {
   const prompt = (task.prompt || '').toLowerCase()
   const paramStr = JSON.stringify(task.params).toLowerCase()
   const errorStr = [task.error, ...(task.outputErrors ?? []).map((item) => item.error)].filter(Boolean).join('\n').toLowerCase()
-  return prompt.includes(q) || paramStr.includes(q) || errorStr.includes(q)
+  const asyncStr = JSON.stringify(visibleAsyncSlots(task)).toLowerCase()
+  return prompt.includes(q) || paramStr.includes(q) || errorStr.includes(q) || asyncStr.includes(q)
 }
 
 export function showCodexCliPrompt(force = false, reason = '接口返回的提示词已被改写') {
@@ -468,7 +429,8 @@ export async function initStore() {
   for (const imgId of imageIds) {
     if (referencedIds.has(imgId)) {
       referencedImageIds.push(imgId)
-    } else {
+    } else if (!tasks.some(isAsyncTask)) {
+      // Another tab can commit a new async output after our startup snapshot.
       await deleteImage(imgId)
     }
   }
@@ -580,6 +542,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   const taskId = genId()
   const task: TaskRecord = {
     id: taskId,
+    asyncGeneration: { protocol: 'cctq-images-v1', credentialFingerprint: await credentialFingerprint(taskId, activeProfile.apiKey),
+      slots: Array.from({ length: normalizedParams.n }, (_, index) => ({ index, phase: 'pending', results: [] })) },
     prompt: prompt.trim(),
     params: normalizedParams,
     apiProvider: activeProfile.provider,
@@ -597,9 +561,12 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     elapsed: null,
   }
 
+  try { await putTask(task) } catch {
+    showToast('本地任务保存失败，未发送生图请求。请检查浏览器存储空间。', 'error')
+    return
+  }
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([task, ...latestTasks])
-  await putTask(task)
 
   if (settings.clearInputAfterSubmit) {
     useStore.getState().setPrompt('')
@@ -612,119 +579,43 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 }
 
 async function executeTask(taskId: string) {
-  const { settings } = useStore.getState()
-  const task = useStore.getState().tasks.find((t) => t.id === taskId)
-  if (!task) return
-  const taskProfile = getTaskApiProfile(settings, task)
-  if (!taskProfile && task.apiProfileId) {
-    const now = Date.now()
-    updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, '找不到此任务所使用的 API 配置。', now),
-    })
-    return
-  }
-  const activeProfile = taskProfile ?? getActiveApiProfile(settings)
-  const requestSettings = createSettingsForApiProfile(settings, activeProfile)
-  scheduleOpenAIWatchdog(taskId, activeProfile.timeout)
-
+  const task = useStore.getState().tasks.find(t => t.id === taskId)
+  if (!task?.asyncGeneration) return
+  const profile = getTaskApiProfile(useStore.getState().settings, task)
   try {
-    // 获取输入图片 data URLs
-    const inputDataUrls: string[] = []
-    for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
+    if (!profile) throw new Error('找不到原任务 API 配置，未发送请求')
+    const inputImageDataUrls: string[] = []
+    const ids = task.maskTargetImageId
+      ? [task.maskTargetImageId, ...task.inputImageIds.filter(id => id !== task.maskTargetImageId)]
+      : task.inputImageIds
+    for (const id of ids) {
+      const src = await ensureImageCached(id)
+      if (!src) throw new Error('参考图不可读取，未发送生图请求')
+      inputImageDataUrls.push(src)
     }
-    let maskDataUrl: string | undefined
-    if (task.maskImageId) {
-      maskDataUrl = await ensureImageCached(task.maskImageId)
-      if (!maskDataUrl) throw new Error('遮罩图片已不存在')
-    }
-
-    const result = await callImageApi({
-      settings: requestSettings,
-      prompt: replaceImageMentionsForApi(task.prompt),
-      params: task.params,
-      inputImageDataUrls: inputDataUrls,
-      maskDataUrl,
-    })
-
-    const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') return
-
-    // 存储输出图片
-    const outputIds: string[] = []
-    for (const dataUrl of result.images) {
-      const imgId = await storeImage(dataUrl, 'generated')
-      cacheImage(imgId, dataUrl)
-      outputIds.push(imgId)
-    }
-    const actualParamsList = result.actualParamsList
-    const actualParams = { ...result.actualParams, n: outputIds.length }
-    const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPromptByImage = mapRevisedPromptsByImage(outputIds, result.revisedPrompts)
-    const promptWasRevised = result.revisedPrompts?.some(
-      (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== task.prompt.trim(),
-    )
-    const hasRevisedPromptValue = result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
-    if (!activeProfile.codexCli) {
-      if (promptWasRevised) {
-        showCodexCliPrompt()
-      } else if (!hasRevisedPromptValue) {
-        showCodexCliPrompt(false, '接口没有返回官方 API 会返回的部分信息')
-      }
-    }
-
-    // 更新任务
-    const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
-      await deleteUnreferencedImageIds(outputIds)
-      return
-    }
-    clearOpenAIWatchdogTimer(taskId)
-    const now = Date.now()
-    updateTaskInStore(taskId, {
-      outputImages: outputIds,
-      outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
-      actualParams,
-      actualParamsByImage,
-      revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
-      ...createTaskDonePatch(task, now),
-    })
-
-    const failedCount = result.failedRequests?.length ?? 0
-    const completionMessage = failedCount > 0
-      ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
-      : `生成完成，共 ${outputIds.length} 张图片`
-    useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
-    const currentMask = useStore.getState().maskDraft
-    if (
-      maskDataUrl &&
-      currentMask &&
-      currentMask.targetImageId === task.maskTargetImageId &&
-      currentMask.maskDataUrl === maskDataUrl
-    ) {
-      useStore.getState().clearMaskDraft()
-    }
-  } catch (err) {
-    clearOpenAIWatchdogTimer(taskId)
-    const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestTask || latestTask.status !== 'running') return
-    const now = Date.now()
-    updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), now),
-      errorResponse: getApiErrorResponseSnapshot(err),
-    })
-    useStore.getState().setDetailTaskId(taskId)
-  } finally {
-    // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
-    for (const imgId of task.inputImageIds) {
-      deleteCachedImage(imgId)
-    }
+    const maskDataUrl = task.maskImageId ? await ensureImageCached(task.maskImageId) : undefined
+    if (task.maskImageId && !maskDataUrl) throw new Error('遮罩不可读取，未发送生图请求')
+    await asyncRuntime.run(taskId, { profile, opts: {
+      settings: createSettingsForApiProfile(useStore.getState().settings, profile),
+      prompt: replaceImageMentionsForApi(task.prompt), params: task.params, inputImageDataUrls, maskDataUrl: maskDataUrl || undefined,
+    } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const updated = await commitAsyncTask(taskId, current => ({ ...current, status: 'error', error: message,
+      asyncGeneration: { ...current.asyncGeneration!, slots: current.asyncGeneration!.slots.map(s => ({ ...s, phase: 'failed', error: message })) },
+    })).catch(() => undefined)
+    if (updated) receiveAsyncTask(updated)
+    useStore.getState().showToast(message, 'error')
   }
 }
 
 export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
+  if (useStore.getState().tasks.some(t => t.id === taskId && isAsyncTask(t))) {
+    void commitAsyncTask(taskId, current => ({ ...current, ...patch }))
+      .then(task => { if (task) { receiveAsyncTask(task); asyncChanges?.postMessage({ id: taskId }) } })
+      .catch(() => useStore.getState().showToast('任务更新保存失败', 'error'))
+    return
+  }
   const { tasks, setTasks } = useStore.getState()
   const updated = tasks.map((t) =>
     t.id === taskId ? { ...t, ...patch } : t,
@@ -734,14 +625,67 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   if (task) putTask(task)
 }
 
+function receiveAsyncTask(task: TaskRecord) {
+  useStore.setState(state => ({ tasks: state.tasks.map(t => t.id === task.id ? task : t) }))
+}
+
+const asyncChanges = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('cctq-async-tasks') : null
+
+const asyncRuntime = new AsyncImageRuntime({
+  read: getTask, commit: commitAsyncTask, imageId: hashDataUrl, lock: browserTaskLock,
+  profile: task => getTaskApiProfile(useStore.getState().settings, task) ?? undefined,
+  changed: task => { receiveAsyncTask(task); asyncChanges?.postMessage({ id: task.id }) },
+  saved: image => { cacheImage(image.id, image.dataUrl); scheduleThumbnailBackfill([image.id], 'visible') },
+  notify: message => useStore.getState().showToast(message, 'error'),
+})
+
+if (asyncChanges) asyncChanges.onmessage = event => {
+  const { id, deleted } = event.data ?? {}
+  if (typeof id !== 'string') return
+  if (deleted) {
+    asyncRuntime.cancel(id)
+    useStore.setState(state => ({ tasks: state.tasks.filter(t => t.id !== id), detailTaskId: state.detailTaskId === id ? null : state.detailTaskId }))
+  } else if (!asyncRuntime.isRunning(id) && !asyncRuntime.hasRescue(id)) {
+    void getTask(id).then(task => { if (task) receiveAsyncTask(task) }).catch(() => {})
+  }
+}
+
+export async function resumeAsyncTask(taskId: string) {
+  if (hasActiveDataOperations(useStore.getState().tasks.filter(t => t.id === taskId)) && asyncRuntime.isRunning(taskId)) return
+  await asyncRuntime.run(taskId)
+}
+
+export async function downloadAsyncTaskResult(taskId: string, slotIndex: number, resultIndex: number) {
+  const task = useStore.getState().tasks.find(t => t.id === taskId)
+  const result = task?.asyncGeneration?.slots.find(s => s.index === slotIndex)?.results[resultIndex]
+  if (!task || !result) throw new Error('图片结果已不存在')
+  if (result.imageId && await ensureImageCached(result.imageId)) {
+    const exported = await downloadImageIds([result.imageId], `task-${taskId}-${slotIndex + 1}-${resultIndex + 1}`)
+    if (!exported.successCount) throw new Error('本地图片导出失败')
+    return
+  }
+  const image = await asyncRuntime.download(taskId, slotIndex, resultIndex)
+  const exported = await downloadImageIds([image.dataUrl], `task-${taskId}-${slotIndex + 1}-${resultIndex + 1}`)
+  if (!exported.successCount) throw new Error('图片下载保存失败')
+}
+
 /** 重试失败的任务：创建新任务并执行 */
-export async function retryTask(task: TaskRecord) {
+export async function retryTask(task: TaskRecord, confirmed = false) {
+  if (isAsyncTask(task) && !confirmed) {
+    useStore.getState().setConfirmDialog({ title: '重新生成并计费？',
+      message: '这会创建新的生图任务。若只是查询或下载失败，请使用原任务的“查询状态”或“下载图片”。原任务可能仍在后台生成。',
+      confirmText: '确认重新生成', action: () => { void retryTask(task, true) } })
+    return
+  }
   const { settings } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
   const taskId = genId()
   const newTask: TaskRecord = {
     id: taskId,
+    asyncGeneration: { protocol: 'cctq-images-v1', credentialFingerprint: await credentialFingerprint(taskId, activeProfile.apiKey),
+      slots: Array.from({ length: normalizedParams.n }, (_, index) => ({ index, phase: 'pending', results: [] })) },
     prompt: task.prompt,
     params: normalizedParams,
     apiProvider: activeProfile.provider,
@@ -759,9 +703,12 @@ export async function retryTask(task: TaskRecord) {
     elapsed: null,
   }
 
+  try { await putTask(newTask) } catch {
+    useStore.getState().showToast('本地任务保存失败，未发送生图请求。', 'error')
+    return
+  }
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([newTask, ...latestTasks])
-  await putTask(newTask)
 
   executeTask(taskId)
 }
@@ -917,7 +864,8 @@ async function removeTasks(taskIds: string[]) {
   const imageIds = new Set<string>()
   for (const task of deletedTasks) {
     addTaskImageIds(imageIds, task)
-    clearOpenAIWatchdogTimer(task.id)
+    asyncRuntime.cancel(task.id)
+    asyncChanges?.postMessage({ id: task.id, deleted: true })
   }
 
   try {
@@ -955,11 +903,19 @@ export async function clearFailedTasks(taskIds?: string[]) {
   if (failedTaskIds.length) await removeMultipleTasks(failedTaskIds)
   if (partialFailedTaskIds.size) {
     const { tasks, setTasks, selectedTaskIds, setSelectedTaskIds, showToast } = useStore.getState()
-    const updated = tasks.map((task) => partialFailedTaskIds.has(task.id) ? { ...task, outputErrors: undefined } : task)
+    const updated = tasks.map((task) => partialFailedTaskIds.has(task.id) && !isAsyncTask(task) ? { ...task, outputErrors: undefined } : task)
     setTasks(updated)
     const nextSelectedTaskIds = selectedTaskIds.filter((id) => !partialFailedTaskIds.has(id))
     if (nextSelectedTaskIds.length !== selectedTaskIds.length) setSelectedTaskIds(nextSelectedTaskIds)
-    await Promise.all(updated.filter((task) => partialFailedTaskIds.has(task.id)).map((task) => putTask(task)))
+    await Promise.all(updated.filter((task) => partialFailedTaskIds.has(task.id)).map(async task => {
+      if (!isAsyncTask(task)) { await putTask(task); return }
+      // Read the latest record in the transaction; another slot/tab may have just saved an ID or image.
+      const saved = await commitAsyncTask(task.id, current => summarizeAsyncTask({ ...current,
+        dismissedAsyncErrorIndices: [...new Set([...(current.dismissedAsyncErrorIndices ?? []),
+          ...current.asyncGeneration!.slots.filter(s => s.phase === 'failed').map(s => s.index)])],
+      }))
+      if (saved) { receiveAsyncTask(saved); asyncChanges?.postMessage({ id: saved.id }) }
+    }))
     showToast(`已清除 ${partialFailedTaskIds.size} 条部分失败记录`, 'success')
   }
 }
@@ -982,6 +938,8 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   const { setTasks, clearInputImages, clearMaskDraft, setSettings, setParams, showToast } = useStore.getState()
 
   if (options.clearTasks) {
+    asyncRuntime.cancelAll()
+    for (const task of useStore.getState().tasks) asyncChanges?.postMessage({ id: task.id, deleted: true })
     await dbClearTasks()
     await clearImages()
     clearImageCaches()
@@ -1177,7 +1135,7 @@ export async function importData(input: File | File[], options: ImportOptions = 
       }
 
       for (const task of importedTasks) {
-        await putTask(task)
+        await putTask(isAsyncTask(task) ? pauseAsyncTask(task) : task)
       }
 
       const tasks = await getAllTasks()

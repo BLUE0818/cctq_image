@@ -10,6 +10,8 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
 import { CloseIcon, CopyIcon, DownloadIcon, EditIcon, TrashIcon } from './icons'
+import AsyncTaskPanel from './AsyncTaskPanel'
+import { asyncTaskLabel, visibleAsyncSlots } from '../lib/asyncTaskState'
 
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
@@ -93,6 +95,12 @@ export default function DetailModal() {
   const allInputImageIds = task?.inputImageIds ?? []
   const outputSlots = useMemo(() => {
     if (!task) return []
+    if (task.asyncGeneration) return visibleAsyncSlots(task).flatMap(slot => {
+      const images = slot.results.filter(r => r.imageId).map(r => ({ requestIndex: slot.index,
+        outputImageIndex: task.outputImages.indexOf(r.imageId!), imageId: r.imageId!, error: '', response: undefined as typeof slot.errorResponse }))
+      if (images.length) return images
+      return slot.phase === 'failed' ? [{ requestIndex: slot.index, outputImageIndex: -1, imageId: '', error: slot.error || '生成失败', response: slot.errorResponse }] : []
+    })
     const outputErrors = task.outputErrors ?? []
     if (outputErrors.length === 0) {
       return task.outputImages.map((imageId, outputImageIndex) => ({
@@ -380,7 +388,7 @@ export default function DetailModal() {
 
         {/* 左侧：图片 */}
         <div ref={imagePanelRef} className="md:w-1/2 w-full h-64 md:h-auto bg-gray-100 dark:bg-black/20 relative flex items-center justify-center flex-shrink-0 min-h-[16rem]">
-          {task.status === 'done' && outputLen > 0 && currentOutputPreviewSrc && (
+          {outputLen > 0 && currentOutputPreviewSrc && (
             <>
               <img
                 ref={mainImageRef}
@@ -486,7 +494,7 @@ export default function DetailModal() {
               )}
             </>
           )}
-          {task.status === 'done' && outputLen > 0 && currentOutputError && (
+          {outputLen > 0 && currentOutputError && (
             <div className="w-full max-w-md px-4 text-center">
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -535,7 +543,7 @@ export default function DetailModal() {
               )}
             </div>
           )}
-          {task.status === 'running' && (
+          {task.status === 'running' && !currentOutputPreviewSrc && !currentOutputError && (
             <>
               <div className="absolute left-4 top-4 flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -551,7 +559,8 @@ export default function DetailModal() {
               )}
             </>
           )}
-          {task.status === 'error' && (
+          {task.status === 'paused' && !currentOutputPreviewSrc && !currentOutputError && <p className="text-amber-600">{asyncTaskLabel(task)}</p>}
+          {task.status === 'error' && !currentOutputError && (
             <div className="w-full max-w-md px-4 text-center">
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -611,6 +620,7 @@ export default function DetailModal() {
           </button>
 
           <div data-selectable-text className="flex-1">
+            {task.asyncGeneration && <AsyncTaskPanel task={task} />}
             <div className="flex items-center gap-1.5 mb-2">
               <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
                 输入内容

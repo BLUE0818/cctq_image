@@ -76,7 +76,36 @@ export interface MaskDraft {
 
 // ===== 任务记录 =====
 
-export type TaskStatus = 'running' | 'done' | 'error'
+export type TaskStatus = 'running' | 'done' | 'error' | 'paused'
+
+export type AsyncRemoteStatus = 'queued' | 'in_progress' | 'completed' | 'failed'
+export type AsyncPhase = 'pending' | 'submitting' | 'polling' | 'downloading' | 'saving' | 'saved' | 'paused' | 'failed' | 'unknown'
+
+export interface AsyncImageResult {
+  url: string
+  imageId?: string
+  actualParams?: Partial<TaskParams>
+  revisedPrompt?: string
+}
+
+export interface AsyncImageSlot {
+  index: number
+  phase: AsyncPhase
+  remoteId?: string
+  remoteStatus?: AsyncRemoteStatus
+  lastCheckedAt?: number
+  expiresAt?: number
+  results: AsyncImageResult[]
+  error?: string
+  errorResponse?: ApiErrorResponseSnapshot
+}
+
+export interface AsyncGeneration {
+  protocol: 'cctq-images-v1'
+  /** SHA-256(task.id + API Key)，绑定原凭据但不在任务中复制明文 Key。 */
+  credentialFingerprint: string
+  slots: AsyncImageSlot[]
+}
 
 export interface ApiErrorResponseSnapshot {
   status?: number
@@ -95,6 +124,7 @@ export interface TaskOutputError {
 
 export interface TaskRecord {
   id: string
+  asyncGeneration?: AsyncGeneration
   prompt: string
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
@@ -119,6 +149,8 @@ export interface TaskRecord {
   outputImages: string[]
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
   outputErrors?: TaskOutputError[]
+  /** 已手动清除的异步失败展示；保留槽位与远端 ID，不影响其他槽位继续处理。 */
+  dismissedAsyncErrorIndices?: number[]
   status: TaskStatus
   error: string | null
   errorResponse?: ApiErrorResponseSnapshot

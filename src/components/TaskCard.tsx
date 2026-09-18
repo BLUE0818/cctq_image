@@ -5,6 +5,7 @@ import { ensureImageThumbnailCached, subscribeImageThumbnail } from '../lib/imag
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL } from '../lib/apiProfiles'
+import { asyncTaskLabel } from '../lib/asyncTaskState'
 
 interface Props {
   task: TaskRecord
@@ -185,6 +186,7 @@ export default function TaskCard({
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
+  const showImageStatus = Boolean(task.asyncGeneration && (task.status === 'running' || task.status === 'paused'))
 
   const defaultModelForProvider = DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
@@ -248,7 +250,7 @@ export default function TaskCard({
       <div className="flex h-40">
         {/* 左侧图片区域 */}
         <div className="w-40 min-w-[10rem] h-full bg-gray-100 dark:bg-black/20 relative flex items-center justify-center overflow-hidden flex-shrink-0">
-          {task.status === 'running' && (
+          {task.status === 'running' && !thumbSrc && (
             <div className="flex flex-col items-center gap-2">
               <svg
                 className="w-8 h-8 text-blue-400 animate-spin"
@@ -269,10 +271,10 @@ export default function TaskCard({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 />
               </svg>
-              <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
+              <span role="status" aria-label="任务状态" className="text-xs text-gray-500 dark:text-gray-400 px-2 text-center">{task.asyncGeneration ? asyncTaskLabel(task) : '生成中...'}</span>
             </div>
           )}
-          {task.status === 'error' && (
+          {task.status === 'error' && !thumbSrc && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
                 className="w-7 h-7 text-red-400"
@@ -292,7 +294,7 @@ export default function TaskCard({
               </span>
             </div>
           )}
-          {task.status === 'done' && thumbSrc && (
+          {thumbSrc && (
             <>
               <img
                 src={thumbSrc}
@@ -301,12 +303,18 @@ export default function TaskCard({
                 loading="lazy"
                 alt=""
               />
-              {(hasPartialOutputFailure || task.outputImages.length > 1) && (
+              {!showImageStatus && (hasPartialOutputFailure || task.outputImages.length > 1) && (
                 <span className="absolute bottom-1 right-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
                   {hasPartialOutputFailure ? <>{requestedOutputCount} | <span className="font-semibold text-yellow-300">{outputSuccessCount}</span></> : task.outputImages.length}
                 </span>
               )}
             </>
+          )}
+          {task.status === 'paused' && !thumbSrc && <span role="status" aria-label="任务状态" className="text-xs text-amber-600 dark:text-amber-400 px-2 text-center">等待手动继续</span>}
+          {showImageStatus && thumbSrc && (
+            <span role="status" aria-label="任务状态" className="absolute inset-x-0 bottom-0 bg-black/65 px-2 py-1.5 text-center text-xs leading-relaxed text-white backdrop-blur-sm">
+              {asyncTaskLabel(task)}
+            </span>
           )}
           {task.status === 'done' && !thumbSrc && (
             <svg
@@ -433,7 +441,7 @@ export default function TaskCard({
                 <button
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
-                  title="重试任务"
+                  title={task.asyncGeneration ? '重新生成（会创建新任务并计费）' : '重试任务'}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
