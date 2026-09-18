@@ -47,7 +47,7 @@ describe('CCTQ API profile normalization', () => {
       provider: 'openai',
       baseUrl: DEFAULT_BASE_URL,
       apiKey: 'legacy-key',
-      model: 'gpt-image-2-pro',
+      model: DEFAULT_IMAGES_MODEL,
       timeout: 90,
       codexCli: true,
     })
@@ -79,6 +79,7 @@ describe('CCTQ API profile normalization', () => {
       baseUrl: DEFAULT_BASE_URL,
       apiKey: '',
       model: DEFAULT_IMAGES_MODEL,
+      codexCli: true,
     })
     expect(active.apiKey).toBe('')
     expect(active.baseUrl).toBe(DEFAULT_BASE_URL)
@@ -100,7 +101,7 @@ describe('CCTQ API profile normalization', () => {
       baseUrl: DEFAULT_BASE_URL,
       apiKey: '',
       model: DEFAULT_IMAGES_MODEL,
-      codexCli: false,
+      codexCli: true,
     })
     expect(active.apiKey).toBe('')
   })
@@ -166,6 +167,37 @@ describe('CCTQ API profile normalization', () => {
     const settings = normalizeSettings({
       profiles: [createDefaultOpenAIProfile({ model: 'custom-model' })],
     })
+    expect(settings.model).toBe(DEFAULT_IMAGES_MODEL)
+    expect(settings.profiles[0].model).toBe(DEFAULT_IMAGES_MODEL)
+  })
+
+  it('forces Codex compatibility on when an older setting disabled it', () => {
+    const settings = normalizeSettings({
+      profiles: [createDefaultOpenAIProfile({ id: 'legacy', codexCli: false })],
+      activeProfileId: 'legacy',
+      codexCli: false,
+    })
+
+    expect(settings.codexCli).toBe(true)
+    expect(settings.profiles[0].codexCli).toBe(true)
+  })
+
+  it('migrates the removed Pro model to the default model', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        id: 'legacy',
+        name: 'Legacy',
+        provider: 'openai',
+        baseUrl: DEFAULT_BASE_URL,
+        apiKey: 'legacy-key',
+        model: 'gpt-image-2-pro',
+        timeout: 600,
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy',
+    })
+
     expect(settings.model).toBe(DEFAULT_IMAGES_MODEL)
     expect(settings.profiles[0].model).toBe(DEFAULT_IMAGES_MODEL)
   })

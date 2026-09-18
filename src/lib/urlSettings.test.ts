@@ -23,7 +23,7 @@ describe('URL settings params', () => {
       provider: 'openai',
       baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
-      model: 'gpt-image-2-pro',
+      model: DEFAULT_IMAGES_MODEL,
       codexCli: true,
     })
   })
@@ -112,7 +112,7 @@ describe('URL settings params', () => {
         apiKey: 'custom-key',
         model: 'custom-model',
         timeout: 300,
-        codexCli: false,
+        codexCli: true,
         apiProxy: false,
       }],
     }))

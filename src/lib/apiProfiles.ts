@@ -2,7 +2,7 @@ import type { ApiProfile, AppSettings } from '../types'
 import { DEFAULT_ZIP_DOWNLOAD_ROUTES, ZIP_DOWNLOAD_ROUTE_VALUES } from '../types'
 
 export const DEFAULT_BASE_URL = 'https://www.cctq.ai/v1'
-export const IMAGE_MODEL_OPTIONS = ['gpt-image-2', 'gpt-image-2-pro'] as const
+export const IMAGE_MODEL_OPTIONS = ['gpt-image-2'] as const
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
@@ -28,11 +28,11 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     id: DEFAULT_OPENAI_PROFILE_ID,
     name: '默认',
     apiKey: '',
-    model: DEFAULT_IMAGES_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
-    codexCli: false,
     apiProxy: false,
     ...overrides,
+    model: normalizeImageModel(overrides.model),
+    codexCli: DEFAULT_CODEX_CLI,
     provider: 'openai',
     baseUrl: DEFAULT_BASE_URL,
   }
@@ -48,7 +48,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: normalizeImageModel(record.model ?? defaults.model),
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
-    codexCli: typeof record.codexCli === 'boolean' ? record.codexCli : defaults.codexCli,
+    codexCli: DEFAULT_CODEX_CLI,
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
   })
 }
@@ -71,7 +71,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
         apiKey: !hasLegacyCustomProviders && typeof record.apiKey === 'string' ? record.apiKey : '',
         model: !hasLegacyCustomProviders ? normalizeImageModel(record.model) : DEFAULT_IMAGES_MODEL,
         timeout: !hasLegacyCustomProviders && typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : DEFAULT_API_TIMEOUT,
-        codexCli: !hasLegacyCustomProviders && Boolean(record.codexCli),
+        codexCli: DEFAULT_CODEX_CLI,
         apiProxy: !hasLegacyCustomProviders && Boolean(record.apiProxy),
       })]
   const safeProfiles = profiles.length ? profiles : [createDefaultOpenAIProfile()]
@@ -116,7 +116,7 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
     apiKey: useLegacyTopLevelFields && typeof record.apiKey === 'string' ? record.apiKey : profile.apiKey,
     model: normalizeImageModel(useLegacyTopLevelFields ? record.model ?? profile.model : profile.model),
     timeout: useLegacyTopLevelFields && typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
-    codexCli: useLegacyTopLevelFields && typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
+    codexCli: DEFAULT_CODEX_CLI,
     apiProxy: useLegacyTopLevelFields && typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,
   })
 }
