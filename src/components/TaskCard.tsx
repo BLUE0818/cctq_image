@@ -5,7 +5,6 @@ import { ensureImageThumbnailCached, subscribeImageThumbnail } from '../lib/imag
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL } from '../lib/apiProfiles'
-import AsyncTaskPanel from './AsyncTaskPanel'
 import { asyncTaskLabel } from '../lib/asyncTaskState'
 
 interface Props {
@@ -187,6 +186,7 @@ export default function TaskCard({
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
+  const showImageStatus = Boolean(task.asyncGeneration && (task.status === 'running' || task.status === 'paused'))
 
   const defaultModelForProvider = DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
@@ -271,7 +271,7 @@ export default function TaskCard({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 />
               </svg>
-              <span className="text-xs text-gray-400 dark:text-gray-500 px-2 text-center">{task.asyncGeneration ? asyncTaskLabel(task) : '生成中...'}</span>
+              <span role="status" aria-label="任务状态" className="text-xs text-gray-500 dark:text-gray-400 px-2 text-center">{task.asyncGeneration ? asyncTaskLabel(task) : '生成中...'}</span>
             </div>
           )}
           {task.status === 'error' && !thumbSrc && (
@@ -303,14 +303,19 @@ export default function TaskCard({
                 loading="lazy"
                 alt=""
               />
-              {(hasPartialOutputFailure || task.outputImages.length > 1) && (
+              {!showImageStatus && (hasPartialOutputFailure || task.outputImages.length > 1) && (
                 <span className="absolute bottom-1 right-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
                   {hasPartialOutputFailure ? <>{requestedOutputCount} | <span className="font-semibold text-yellow-300">{outputSuccessCount}</span></> : task.outputImages.length}
                 </span>
               )}
             </>
           )}
-          {task.status === 'paused' && !thumbSrc && <span className="text-xs text-amber-600 px-2">等待手动继续</span>}
+          {task.status === 'paused' && !thumbSrc && <span role="status" aria-label="任务状态" className="text-xs text-amber-600 dark:text-amber-400 px-2 text-center">等待手动继续</span>}
+          {showImageStatus && thumbSrc && (
+            <span role="status" aria-label="任务状态" className="absolute inset-x-0 bottom-0 bg-black/65 px-2 py-1.5 text-center text-xs leading-relaxed text-white backdrop-blur-sm">
+              {asyncTaskLabel(task)}
+            </span>
+          )}
           {task.status === 'done' && !thumbSrc && (
             <svg
               className="w-8 h-8 text-gray-300"
@@ -530,7 +535,6 @@ export default function TaskCard({
           </div>
         </div>
       </div>
-      {task.asyncGeneration && <AsyncTaskPanel task={task} />}
       </div>
     </div>
   )
