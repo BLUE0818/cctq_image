@@ -11,9 +11,18 @@ vi.mock('./lib/api', () => ({
   callImageApi: vi.fn(),
 }))
 
+const asyncMock = vi.hoisted(() => ({ run: vi.fn(async () => {}), cancel: vi.fn(), cancelAll: vi.fn(), isRunning: vi.fn(() => false), hasRescue: vi.fn(() => false) }))
+vi.mock('./lib/asyncImageRuntime', () => ({
+  AsyncImageRuntime: class { run = asyncMock.run; cancel = asyncMock.cancel; cancelAll = asyncMock.cancelAll; isRunning = asyncMock.isRunning; hasRescue = asyncMock.hasRescue },
+  browserTaskLock: vi.fn(),
+}))
+
 vi.mock('./lib/db', () => ({
   CURRENT_THUMBNAIL_VERSION: 1,
   getAllTasks: vi.fn(async () => []),
+  getTask: vi.fn(async () => undefined),
+  commitAsyncTask: vi.fn(async () => undefined),
+  hashDataUrl: vi.fn(async () => 'hash'),
   putTask: vi.fn(async () => undefined),
   deleteTask: vi.fn(async () => undefined),
   commitTaskDeletion: vi.fn(async () => undefined),
@@ -461,28 +470,26 @@ describe('task deletion', () => {
     expect(useStore.getState().tasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
   })
 
-  it('removes output images that arrive after the task is deleted', async () => {
-    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const imageStore = deferred<string>()
-    vi.mocked(callImageApi).mockReturnValueOnce(request.promise)
-    vi.mocked(db.storeImage).mockReturnValueOnce(imageStore.promise)
-
+  it('starts the new async runtime only after persisting the task and cancels it on deletion', async () => {
     await submitTask()
-    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(asyncMock.run).toHaveBeenCalledOnce())
     const running = useStore.getState().tasks[0]
-    request.resolve({
-      images: ['late-output'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    await vi.waitFor(() => expect(db.storeImage).toHaveBeenCalledWith('late-output', 'generated'))
+    expect(running.asyncGeneration).toMatchObject({ protocol: 'cctq-images-v1', slots: [{ phase: 'pending' }] })
+    expect(db.putTask).toHaveBeenCalledWith(running)
+    expect(vi.mocked(db.putTask).mock.invocationCallOrder[0]).toBeLessThan(asyncMock.run.mock.invocationCallOrder[0])
+    expect(callImageApi).not.toHaveBeenCalled()
     await removeTask(running)
-    imageStore.resolve('late-output')
-
-    await vi.waitFor(() => expect(db.deleteImage).toHaveBeenCalledWith('late-output'))
+    expect(asyncMock.cancel).toHaveBeenCalledWith(running.id)
     expect(useStore.getState().tasks).toEqual([])
     expect(useStore.getState().detailTaskId).toBeNull()
+  })
+
+  it('does not submit when the initial local task cannot commit', async () => {
+    vi.mocked(db.putTask).mockRejectedValueOnce(new Error('quota'))
+    await submitTask()
+    expect(asyncMock.run).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('未发送'), 'error')
   })
 
   it('restores an image when a new reference appears during deletion', async () => {

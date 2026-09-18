@@ -640,9 +640,10 @@ export default function SettingsModal() {
               </label>
 
               <label className="block">
-                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">请求超时 (秒)</span>
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">旧同步请求超时 (秒)</span>
                   <input
                     value={timeoutInput}
+                    disabled
                     onChange={(e) => setTimeoutInput(e.target.value)}
                     onBlur={commitTimeout}
                     type="number"
@@ -650,6 +651,7 @@ export default function SettingsModal() {
                     max={600}
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
+                  <p className="mt-1 text-xs text-gray-500">仅保留旧配置值。异步任务以服务端状态为准，不因排队或生成耗时超过此值而失败。</p>
               </label>
             </div>
             )}
