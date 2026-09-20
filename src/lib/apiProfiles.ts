@@ -2,8 +2,8 @@ import type { ApiProfile, AppSettings } from '../types'
 import { DEFAULT_ZIP_DOWNLOAD_ROUTES, ZIP_DOWNLOAD_ROUTE_VALUES } from '../types'
 
 export const DEFAULT_BASE_URL = 'https://www.cctq.ai/v1'
-export const IMAGE_MODEL_OPTIONS = ['gpt-image-2'] as const
-export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
+export const IMAGE_MODEL_OPTIONS = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2'] as const
+export const DEFAULT_IMAGES_MODEL = 'gpt-image-2.5-flare'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 export const DEFAULT_CODEX_CLI = true

@@ -24,6 +24,12 @@ export interface ModalAnnouncement {
   enabled?: boolean
 }
 
+const image25Announcement = {
+  id: '20260920-155043-image-2-5-models',
+  title: '模型上新',
+  message: '已上架gpt-image-2.5-flare、gpt-image-2.5-sunburst模型。\nflare速度更快；sunburst更慢，但复杂图片效果更好。',
+}
+
 const asyncGenerationAnnouncement = {
   id: '20260918-181117-async-generation',
   title: '网站已全面使用异步生成',
@@ -31,6 +37,10 @@ const asyncGenerationAnnouncement = {
 }
 
 export const modalAnnouncements: ModalAnnouncement[] = [
+  {
+    ...image25Announcement,
+    confirmText: '我知道了',
+  },
   {
     ...asyncGenerationAnnouncement,
     confirmText: '我知道了',
@@ -54,6 +64,11 @@ export const modalAnnouncements: ModalAnnouncement[] = [
 ]
 
 export const timelineAnnouncements: TimelineAnnouncement[] = [
+  {
+    ...image25Announcement,
+    meta: '2026-09-20',
+    tone: 'success',
+  },
   {
     ...asyncGenerationAnnouncement,
     meta: '2026-09-18',
