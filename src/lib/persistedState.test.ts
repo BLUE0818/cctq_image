@@ -83,10 +83,10 @@ describe('persistedState', () => {
     }, currentState)
 
     expect(merged.settings.codexCli).toBe(true)
-    expect(merged.settings.model).toBe('gpt-image-2')
+    expect(merged.settings.model).toBe('gpt-image-2.5-flare')
     expect(merged.settings.profiles[0]).toMatchObject({
       codexCli: true,
-      model: 'gpt-image-2',
+      model: 'gpt-image-2.5-flare',
     })
   })
 })

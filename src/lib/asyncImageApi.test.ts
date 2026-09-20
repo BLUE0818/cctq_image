@@ -12,7 +12,7 @@ afterEach(() => vi.unstubAllGlobals())
 describe('CCTQ async protocol', () => {
   it('prepares one async request, preserves size and guard, without synchronous response_format or quality', async () => {
     const request = await prepareAsyncImageRequest(opts, profile)
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ model: 'gpt-image-2', n: 1, async: true, stream: false, size: 'auto' })
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ model: 'gpt-image-2.5-flare', n: 1, async: true, stream: false, size: 'auto' })
     expect(request.init.body).not.toContain('response_format')
     expect(request.init.body).not.toContain('quality')
     expect(request.init.body).toContain('Do not rewrite it')
